@@ -3154,7 +3154,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     end
     
-    local repo = "https://raw.githubusercontent.com/rabbihubmaintainer/DONTLEAKPLEASE/main/"
+    local repo = "https://raw.githubusercontent.com/rabbihubmaintainer/w/main/"
     local success, library_func = pcall(function()
         return loadstring(game:HttpGet(repo .. "Library.lua", true))()
     end)
@@ -6931,7 +6931,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         if readfile and found_file then
                                             loader_script = 'local code=readfile("' .. found_file .. '") local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end'
                                         else
-                                            loader_script = [[local success, code = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/rabbihubmaintainer/DONTLEAKPLEASE/main/main.lua") end) if success and code then local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end else print("[QUEUE ERROR] Download failed") end]]
+                                            loader_script = [[local success, code = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/rabbihubmaintainer/w/main/internalscript.lua") end) if success and code then local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end else print("[QUEUE ERROR] Download failed") end]]
                                         end
                                         queue_func(loader_script)
                                     end)
@@ -13596,7 +13596,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if readfile and found_file then
                                     loader_script = 'local code=readfile("' .. found_file .. '") local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Code preview:",code:sub(1,200)) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end'
                                 else
-                                    loader_script = [[local success, code = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/rabbihubmaintainer/DONTLEAKPLEASE/main/main.lua") end) if success and code then local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end else print("[QUEUE ERROR] Download failed") end]]
+                                    loader_script = [[local success, code = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/rabbihubmaintainer/w/main/internalscript.lua") end) if success and code then local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end else print("[QUEUE ERROR] Download failed") end]]
                                 end
                                 queue_func(loader_script)
                             end)
@@ -27735,7 +27735,7 @@ end
                             if readfile and found_file then
                                 loader_script = 'local code=readfile("' .. found_file .. '") local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) print("[QUEUE DEBUG] Code preview:",code:sub(1,200)) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) print("[QUEUE DEBUG] Traceback:",debug.traceback()) end'
                             else
-                                loader_script = [[local success, code = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/rabbihubmaintainer/DONTLEAKPLEASE/main/main.lua") end) if success and code then local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end else print("[QUEUE ERROR] Download failed") end]]
+                                loader_script = [[local success, code = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/rabbihubmaintainer/w/main/internalscript.lua") end) if success and code then local fn,compileErr=loadstring(code) if not fn then print("[QUEUE ERROR] Compile failed:",compileErr) return end local s,runErr=pcall(fn) if not s then print("[QUEUE ERROR] Runtime failed:",runErr) end else print("[QUEUE ERROR] Download failed") end]]
                             end
                             queue_func(loader_script)
                         end)
