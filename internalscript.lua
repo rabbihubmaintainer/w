@@ -617,6 +617,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             desert_mist_webhook = true,
             desert_mist_webhook_interval = 5,
             desert_mist_auto_pickup = true,
+            desert_mist_log_dangerous_items = true,
+            desert_mist_hop_on_dangerous_item = true,
 
             double_jump = false,
             the_soul = false,
@@ -9039,6 +9041,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Tooltip = "Automatically clicks and vacuums up Desert Mist dropped on the ground.",
                 Callback = function(value)
                     cheat_client.config.desert_mist_auto_pickup = value
+                end
+            })
+
+            group_desert_mist:AddToggle("desert_mist_log_dangerous_items", {
+                Text = "Log Dangerous Held Items",
+                Default = cheat_client.config.desert_mist_log_dangerous_items,
+                Tooltip = "Logs to Discord webhook when a player holds Pebble, Perflora, Celeritas, or Opal Shard.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_log_dangerous_items = value
+                end
+            })
+
+            group_desert_mist:AddToggle("desert_mist_hop_on_dangerous_item", {
+                Text = "Hop on Dangerous Held Item",
+                Default = cheat_client.config.desert_mist_hop_on_dangerous_item,
+                Tooltip = "Instantly escapes and serverhops if any player equips Pebble, Perflora, Celeritas, or Opal Shard.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_hop_on_dangerous_item = value
                 end
             })
 
@@ -27997,25 +28017,27 @@ end
 
 
         do
-            while shared and not shared.is_unloading and task.wait(0.6) do
-                if plr.Backpack and plr.Character and not cs:HasTag(plr.Character, "Danger") and shared and Toggles and Toggles.loop_orderly and Toggles.loop_orderly.Value then
-                    local elixir = FindFirstChild(plr.Backpack, "Tespian Elixir")
-                    if elixir then
-                        plr.Character.Humanoid:EquipTool(elixir)
-                        task.wait(0.1)
-        
-                        local equippedElixir = FindFirstChild(plr.Character, "Tespian Elixir")
-                        if equippedElixir and FindFirstChild(equippedElixir, "RemoteEvent") then
-                            equippedElixir.RemoteEvent:FireServer(plr.Character.HumanoidRootPart.CFrame, "Part", "Self")
-                            task.wait(1.5)
-                            plr.Character:BreakJoints()
-                            
-                            repeat task.wait(0.5)
-                            until FindFirstChild(plr.Character, "Immortal")
+            task.spawn(function()
+                while shared and not shared.is_unloading and task.wait(0.6) do
+                    if plr.Backpack and plr.Character and not cs:HasTag(plr.Character, "Danger") and shared and Toggles and Toggles.loop_orderly and Toggles.loop_orderly.Value then
+                        local elixir = FindFirstChild(plr.Backpack, "Tespian Elixir")
+                        if elixir then
+                            plr.Character.Humanoid:EquipTool(elixir)
+                            task.wait(0.1)
+            
+                            local equippedElixir = FindFirstChild(plr.Character, "Tespian Elixir")
+                            if equippedElixir and FindFirstChild(equippedElixir, "RemoteEvent") then
+                                equippedElixir.RemoteEvent:FireServer(plr.Character.HumanoidRootPart.CFrame, "Part", "Self")
+                                task.wait(1.5)
+                                plr.Character:BreakJoints()
+                                
+                                repeat task.wait(0.5)
+                                until FindFirstChild(plr.Character, "Immortal")
+                            end
                         end
                     end
                 end
-            end
+            end)
         end
 
         do
@@ -28043,6 +28065,9 @@ end
             local session_farmed = 0
             local last_reported_farmed = 0
             local hopping_active = false
+            local dangerous_item_connection = nil
+            local desert_mist_stop_item_listener = nil
+            local desert_mist_handle_dangerous_item = nil
 
             if mem:HasItem("desert_mist_session_total") then
                 session_farmed = tonumber(mem:GetItem("desert_mist_session_total")) or 0
@@ -28128,24 +28153,27 @@ end
                 local rate = (session_farmed / elapsed) * 3600
 
                 local color = 0x2ecc71
-                local title = "🌿 Desert Mist Farmer | Stats Update"
+                local title = " Desert Mist Farmer | Stats Update"
                 local desc = details or "Automated harvesting update."
 
-                if event_type == "threat" then
+                if event_type == "dangerous_item" then
+                    color = 0xff0044
+                    title = " Desert Mist Farmer | Dangerous Item Held"
+                elseif event_type == "threat" then
                     color = 0xe74c3c
-                    title = "⚠️ Desert Mist Farmer | Player Threat Alert"
+                    title = " Desert Mist Farmer | Player Threat Alert"
                 elseif event_type == "serverhop" then
                     color = 0x3498db
-                    title = "🚀 Desert Mist Farmer | Server Hopping"
+                    title = " Desert Mist Farmer | Server Hopping"
                 elseif event_type == "target" then
                     color = 0xf1c40f
-                    title = "🎯 Desert Mist Farmer | Target Count Reached"
+                    title = " Desert Mist Farmer | Target Count Reached"
                 elseif event_type == "started" then
                     color = 0x9b59b6
-                    title = "⚡ Desert Mist Farmer | Session Started"
+                    title = " Desert Mist Farmer | Session Started"
                 elseif event_type == "resumed" then
                     color = 0x1abc9c
-                    title = "🔁 Desert Mist Farmer | Resumed After Serverhop"
+                    title = " Desert Mist Farmer | Resumed After Serverhop"
                 end
 
                 local embed = {
@@ -28153,12 +28181,12 @@ end
                     description = desc,
                     color = color,
                     fields = {
-                        { name = "🎒 Current Inventory", value = string.format("`%d` Desert Mist(s)", current_inv), inline = true },
-                        { name = "📈 Farmed This Session", value = string.format("`+%d`", session_farmed), inline = true },
-                        { name = "⚡ Farm Rate", value = string.format("`%.1f / hr`", rate), inline = true },
-                        { name = "⏱️ Active Runtime", value = string.format("`%s`", format_duration(elapsed)), inline = true },
-                        { name = "👤 Account", value = string.format("`%s`", plr.Name), inline = true },
-                        { name = "🌐 Job ID", value = string.format("`%s`", game.JobId ~= "" and game.JobId or "Local Server"), inline = true },
+                        { name = " Current Inventory", value = string.format("`%d` Desert Mist(s)", current_inv), inline = true },
+                        { name = " Farmed This Session", value = string.format("`+%d`", session_farmed), inline = true },
+                        { name = " Farm Rate", value = string.format("`%.1f / hr`", rate), inline = true },
+                        { name = "⏱ Active Runtime", value = string.format("`%s`", format_duration(elapsed)), inline = true },
+                        { name = " Account", value = string.format("`%s`", plr.Name), inline = true },
+                        { name = " Job ID", value = string.format("`%s`", game.JobId ~= "" and game.JobId or "Local Server"), inline = true },
                     },
                     footer = { text = "bladee | Desert Mist Farmer Automation" },
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -28170,6 +28198,37 @@ end
                         embeds = { embed }
                     })
                 end)
+            end
+
+            local function is_dangerous_item_name(name)
+                if not name then return false end
+                local lower = name:lower()
+                if lower == "pebble" or lower == "perflora" or lower == "celeritas" then
+                    return true
+                end
+                if lower:find("^opal shard") ~= nil then
+                    return true
+                end
+                return false
+            end
+
+            local function desert_mist_check_dangerous_items()
+                local _, _, root = desert_mist_get_character()
+                for _, other_player in ipairs(plrs:GetPlayers()) do
+                    if other_player ~= plr and other_player.Character then
+                        for _, child in ipairs(other_player.Character:GetChildren()) do
+                            if child:IsA("Tool") and is_dangerous_item_name(child.Name) then
+                                local dist = math.huge
+                                local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                                if root and other_root then
+                                    dist = (other_root.Position - root.Position).Magnitude
+                                end
+                                return other_player, child.Name, dist
+                            end
+                        end
+                    end
+                end
+                return nil, nil, nil
             end
 
             local function desert_mist_player_near(radius)
@@ -28271,6 +28330,9 @@ end
                 desert_mist_hold_position = false
                 desert_mist_cancel_tween()
                 desert_mist_stop_noclip()
+                if desert_mist_stop_item_listener then
+                    desert_mist_stop_item_listener()
+                end
             end
 
             local function desert_mist_disable_toggle()
@@ -28528,28 +28590,68 @@ end
                 if desert_mist_farm_escaping then return end
                 desert_mist_farm_escaping = true
                 desert_mist_hold_position = false
+                desert_mist_cancel_tween()
 
                 local _, player_name, player_distance = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
                 local threat_msg = player_name and string.format("Threat: %s within %.0f studs", player_name, player_distance) or "Player detected nearby"
 
-                library:Notify("Desert Mist Farm: " .. threat_msg .. " - escaping!")
-                desert_mist_send_webhook("threat", threat_msg .. ". Executing evasive retreat.")
+                library:Notify("Desert Mist Farm: " .. threat_msg .. " - server hopping!")
+                desert_mist_send_webhook("threat", threat_msg .. ". Server hopping immediately.")
 
-                local _, _, root = desert_mist_get_character()
-                if root and desert_mist_enabled() then
-                    local below_position = root.Position - Vector3.new(0, DESERT_MIST_ESCAPE_DROP, 0)
-                    local dropped = desert_mist_tween_to(below_position, false)
-                    if dropped and desert_mist_enabled() then
-                        desert_mist_tween_to(DESERT_MIST_ESCAPE_POSITION, false)
-                    end
+                -- Skip escape movement; serverhop immediately on any player detection
+                desert_mist_farm_escaping = false
+                desert_mist_serverhop(string.format("Player threat (%s)", threat_msg))
+            end
+
+            desert_mist_handle_dangerous_item = function(danger_player, item_name, dist)
+                if desert_mist_farm_escaping or hopping_active then return end
+                local dist_str = dist < math.huge and string.format("%.0f studs", dist) or "server"
+                local alert_msg = string.format("Player %s (%d) is holding dangerous item: %s [%s]", danger_player.Name, danger_player.UserId, item_name, dist_str)
+
+                library:Notify("Desert Mist Farm: " .. alert_msg)
+
+                if cheat_client.config.desert_mist_log_dangerous_items then
+                    desert_mist_send_webhook("dangerous_item", alert_msg)
                 end
 
-                desert_mist_farm_escaping = false
+                if cheat_client.config.desert_mist_hop_on_dangerous_item then
+                    -- Skip escape movement; serverhop immediately
+                    desert_mist_hold_position = false
+                    desert_mist_cancel_tween()
+                    desert_mist_serverhop(string.format("Held dangerous item: %s by %s", item_name, danger_player.Name))
+                end
+            end
 
-                if cheat_client.config.desert_mist_serverhop_on_player then
-                    desert_mist_serverhop(string.format("Player threat (%s)", threat_msg))
-                else
-                    desert_mist_disable_toggle()
+            local function desert_mist_start_item_listener()
+                if dangerous_item_connection then return end
+                local live_folder = ws:FindFirstChild("Live") or ws
+                dangerous_item_connection = utility:Connection(live_folder.DescendantAdded, function(descendant)
+                    if not desert_mist_enabled() then return end
+                    if not cheat_client.config.desert_mist_log_dangerous_items and not cheat_client.config.desert_mist_hop_on_dangerous_item then return end
+
+                    if descendant:IsA("Tool") and is_dangerous_item_name(descendant.Name) then
+                        local character = descendant.Parent
+                        if character and character:IsA("Model") then
+                            local player = plrs:GetPlayerFromCharacter(character)
+                            if player and player ~= plr then
+                                local _, _, root = desert_mist_get_character()
+                                local other_root = FindFirstChild(character, "HumanoidRootPart")
+                                local dist = (root and other_root) and (other_root.Position - root.Position).Magnitude or math.huge
+                                task.spawn(function()
+                                    if desert_mist_handle_dangerous_item then
+                                        desert_mist_handle_dangerous_item(player, descendant.Name, dist)
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                end)
+            end
+
+            desert_mist_stop_item_listener = function()
+                if dangerous_item_connection then
+                    dangerous_item_connection:Disconnect()
+                    dangerous_item_connection = nil
                 end
             end
 
@@ -28567,6 +28669,7 @@ end
                 end
 
                 desert_mist_start_noclip()
+                desert_mist_start_item_listener()
 
                 local character, _, root = desert_mist_get_character()
                 if not character or not root then
@@ -28580,6 +28683,13 @@ end
                 if initial_distance > DESERT_MIST_START_RADIUS then
                     library:Notify(string.format("Desert Mist Farm: you must be within %d studs of the farm point (current: %.0f)", DESERT_MIST_START_RADIUS, initial_distance))
                     desert_mist_disable_toggle()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                local danger_p, danger_tool, danger_d = desert_mist_check_dangerous_items()
+                if danger_p then
+                    desert_mist_handle_dangerous_item(danger_p, danger_tool, danger_d)
                     desert_mist_farm_running = false
                     return
                 end
@@ -28607,6 +28717,12 @@ end
                 desert_mist_hold_position = true
 
                 while desert_mist_enabled() do
+                    danger_p, danger_tool, danger_d = desert_mist_check_dangerous_items()
+                    if danger_p then
+                        desert_mist_handle_dangerous_item(danger_p, danger_tool, danger_d)
+                        break
+                    end
+
                     player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
                     if player_near then
                         desert_mist_escape()
@@ -28637,6 +28753,12 @@ end
                         continue
                     end
 
+                    danger_p, danger_tool, danger_d = desert_mist_check_dangerous_items()
+                    if danger_p then
+                        desert_mist_handle_dangerous_item(danger_p, danger_tool, danger_d)
+                        break
+                    end
+
                     player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
                     if player_near then
                         desert_mist_escape()
@@ -28650,6 +28772,12 @@ end
 
                     local wait_start = os.clock()
                     while desert_mist_enabled() and (os.clock() - wait_start < DESERT_MIST_LOOP_DELAY) do
+                        danger_p, danger_tool, danger_d = desert_mist_check_dangerous_items()
+                        if danger_p then
+                            desert_mist_handle_dangerous_item(danger_p, danger_tool, danger_d)
+                            break
+                        end
+
                         player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
                         if player_near then
                             desert_mist_escape()
