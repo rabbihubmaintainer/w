@@ -609,6 +609,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             no_mob_trigger = false,
             freecam = false,
 
+            desert_mist_farm = false,
+            desert_mist_serverhop_on_player = true,
+            desert_mist_player_radius = 200,
+            desert_mist_serverhop_on_target = false,
+            desert_mist_target_count = 15,
+            desert_mist_webhook = true,
+            desert_mist_webhook_interval = 5,
+            desert_mist_auto_pickup = true,
+
             double_jump = false,
             the_soul = false,
             better_mana = false,
@@ -8966,6 +8975,106 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 })
             end
+
+            local group_desert_mist = Tabs.Automation:AddRightGroupbox("Desert Mist Farmer")
+
+            group_desert_mist:AddToggle("desert_mist_farm", {
+                Text = "Desert Mist Farm",
+                Default = cheat_client.config.desert_mist_farm,
+                Tooltip = "Tweens to farm spot with noclip, holds position, equips Verdien, charges mana, casts spell, auto-collects Desert Mist, tracks Discord webhook stats, and dodges/hops from players.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_farm = value
+                    if cheat_client.desert_mist then
+                        cheat_client.desert_mist.toggle(value)
+                    end
+                end
+            })
+
+            group_desert_mist:AddToggle("desert_mist_serverhop_on_player", {
+                Text = "Server Hop on Player",
+                Default = cheat_client.config.desert_mist_serverhop_on_player,
+                Tooltip = "Instantly escapes and serverhops to a new server if another player approaches.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_serverhop_on_player = value
+                end
+            })
+
+            group_desert_mist:AddSlider("desert_mist_player_radius", {
+                Text = "Player Threat Radius",
+                Default = cheat_client.config.desert_mist_player_radius,
+                Min = 50,
+                Max = 500,
+                Rounding = 1,
+                Compact = false,
+                Suffix = " studs",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_player_radius = value
+                end
+            })
+
+            group_desert_mist:AddToggle("desert_mist_serverhop_on_target", {
+                Text = "Server Hop on Target",
+                Default = cheat_client.config.desert_mist_serverhop_on_target,
+                Tooltip = "Serverhops once your inventory reaches the target Desert Mist count.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_serverhop_on_target = value
+                end
+            })
+
+            group_desert_mist:AddSlider("desert_mist_target_count", {
+                Text = "Target Mist Count",
+                Default = cheat_client.config.desert_mist_target_count,
+                Min = 1,
+                Max = 100,
+                Rounding = 1,
+                Compact = false,
+                Callback = function(value)
+                    cheat_client.config.desert_mist_target_count = value
+                end
+            })
+
+            group_desert_mist:AddToggle("desert_mist_auto_pickup", {
+                Text = "Auto Pickup Ingredients",
+                Default = cheat_client.config.desert_mist_auto_pickup,
+                Tooltip = "Automatically clicks and vacuums up Desert Mist dropped on the ground.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_auto_pickup = value
+                end
+            })
+
+            group_desert_mist:AddDivider()
+
+            group_desert_mist:AddToggle("desert_mist_webhook", {
+                Text = "Webhook Tracking",
+                Default = cheat_client.config.desert_mist_webhook,
+                Tooltip = "Logs session statistics, gains, threat escapes, and serverhops to your Discord webhook.",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_webhook = value
+                end
+            })
+
+            group_desert_mist:AddSlider("desert_mist_webhook_interval", {
+                Text = "Webhook Log Interval",
+                Default = cheat_client.config.desert_mist_webhook_interval,
+                Min = 1,
+                Max = 20,
+                Rounding = 1,
+                Compact = false,
+                Suffix = " mists",
+                Callback = function(value)
+                    cheat_client.config.desert_mist_webhook_interval = value
+                end
+            })
+
+            group_desert_mist:AddButton("Send Webhook Status", function()
+                if cheat_client.desert_mist and cheat_client.desert_mist.send_stats_webhook then
+                    cheat_client.desert_mist.send_stats_webhook("Manual Status Report")
+                else
+                    library:Notify("Desert Mist engine not loaded yet!")
+                end
+            end)
+
+            group_desert_mist:AddLabel("desert_mist_status_lbl", "Status: Idle | Inv: 0")
 
             group_auto_pickup:AddToggle("auto_trinket", {
                 Text = "Auto Trinket",
@@ -27907,6 +28016,720 @@ end
                     end
                 end
             end
+        end
+
+        do
+            -- =========================================================================
+            -- Desert Mist Farmer Engine
+            -- =========================================================================
+            local DESERT_MIST_FARM_POSITION = Vector3.new(-1199.622, 324.549, 688.112)
+            local DESERT_MIST_ESCAPE_POSITION = Vector3.new(-1402.144, 511.998, 1030.832)
+            local DESERT_MIST_START_RADIUS = 700
+            local DESERT_MIST_ESCAPE_DROP = 100
+            local DESERT_MIST_LOOP_DELAY = 8
+            local DESERT_MIST_TWEEN_SPEED = 150
+            local DESERT_MIST_TOOL = "Verdien"
+            local DESERT_MIST_ITEM = "Desert Mist"
+            local SCRIPT_LOADER_URL = "https://raw.githubusercontent.com/rabbihubmaintainer/w/main/internalscript.lua"
+
+            local desert_mist_farm_running = false
+            local desert_mist_farm_escaping = false
+            local desert_mist_hold_position = false
+            local desert_mist_active_tween = nil
+            local desert_mist_noclip_connection = nil
+            local desert_mist_collision_states = setmetatable({}, {__mode = "k"})
+
+            local session_start_time = os.time()
+            local session_farmed = 0
+            local last_reported_farmed = 0
+            local hopping_active = false
+
+            if mem:HasItem("desert_mist_session_total") then
+                session_farmed = tonumber(mem:GetItem("desert_mist_session_total")) or 0
+                last_reported_farmed = session_farmed
+            end
+            if mem:HasItem("desert_mist_session_start") then
+                session_start_time = tonumber(mem:GetItem("desert_mist_session_start")) or os.time()
+            end
+
+            local function desert_mist_enabled()
+                return shared
+                    and not shared.is_unloading
+                    and cheat_client.config.desert_mist_farm == true
+                    and Toggles
+                    and Toggles.desert_mist_farm
+                    and Toggles.desert_mist_farm.Value
+            end
+
+            local function desert_mist_get_character()
+                local character = plr.Character
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+
+                if not character or not humanoid or humanoid.Health <= 0 or not root then
+                    return nil, nil, nil
+                end
+
+                return character, humanoid, root
+            end
+
+            local function count_desert_mist()
+                local count = 0
+                if plr.Backpack then
+                    for _, item in ipairs(plr.Backpack:GetChildren()) do
+                        if item:IsA("Tool") and (item.Name == DESERT_MIST_ITEM or item.Name == "3293218896") then
+                            count = count + 1
+                        end
+                    end
+                end
+                if plr.Character then
+                    for _, item in ipairs(plr.Character:GetChildren()) do
+                        if item:IsA("Tool") and (item.Name == DESERT_MIST_ITEM or item.Name == "3293218896") then
+                            count = count + 1
+                        end
+                    end
+                end
+                return count
+            end
+
+            local function desert_mist_pickup_nearby()
+                if not cheat_client.config.desert_mist_auto_pickup then return end
+                local _, _, root = desert_mist_get_character()
+                if not root then return end
+
+                local ingredient_folder = ws:FindFirstChild("Ingredients")
+                if ingredient_folder then
+                    for _, obj in ipairs(ingredient_folder:GetChildren()) do
+                        local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
+                        if part and (part.Position - root.Position).Magnitude <= 35 then
+                            local cd = obj:FindFirstChildOfClass("ClickDetector") or (part and part:FindFirstChildOfClass("ClickDetector"))
+                            if cd then
+                                pcall(fireclickdetector, cd)
+                            end
+                        end
+                    end
+                end
+            end
+
+            local function format_duration(seconds)
+                local hours = math.floor(seconds / 3600)
+                local mins = math.floor((seconds % 3600) / 60)
+                local secs = seconds % 60
+                return string.format("%02d:%02d:%02d", hours, mins, secs)
+            end
+
+            local function desert_mist_send_webhook(event_type, details)
+                if not cheat_client.config.desert_mist_webhook then return end
+                local webhook_url = cheat_client.config.webhook
+                if not webhook_url or webhook_url == "" then return end
+
+                local current_inv = count_desert_mist()
+                local elapsed = math.max(os.time() - session_start_time, 1)
+                local rate = (session_farmed / elapsed) * 3600
+
+                local color = 0x2ecc71
+                local title = "🌿 Desert Mist Farmer | Stats Update"
+                local desc = details or "Automated harvesting update."
+
+                if event_type == "threat" then
+                    color = 0xe74c3c
+                    title = "⚠️ Desert Mist Farmer | Player Threat Alert"
+                elseif event_type == "serverhop" then
+                    color = 0x3498db
+                    title = "🚀 Desert Mist Farmer | Server Hopping"
+                elseif event_type == "target" then
+                    color = 0xf1c40f
+                    title = "🎯 Desert Mist Farmer | Target Count Reached"
+                elseif event_type == "started" then
+                    color = 0x9b59b6
+                    title = "⚡ Desert Mist Farmer | Session Started"
+                elseif event_type == "resumed" then
+                    color = 0x1abc9c
+                    title = "🔁 Desert Mist Farmer | Resumed After Serverhop"
+                end
+
+                local embed = {
+                    title = title,
+                    description = desc,
+                    color = color,
+                    fields = {
+                        { name = "🎒 Current Inventory", value = string.format("`%d` Desert Mist(s)", current_inv), inline = true },
+                        { name = "📈 Farmed This Session", value = string.format("`+%d`", session_farmed), inline = true },
+                        { name = "⚡ Farm Rate", value = string.format("`%.1f / hr`", rate), inline = true },
+                        { name = "⏱️ Active Runtime", value = string.format("`%s`", format_duration(elapsed)), inline = true },
+                        { name = "👤 Account", value = string.format("`%s`", plr.Name), inline = true },
+                        { name = "🌐 Job ID", value = string.format("`%s`", game.JobId ~= "" and game.JobId or "Local Server"), inline = true },
+                    },
+                    footer = { text = "bladee | Desert Mist Farmer Automation" },
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+                }
+
+                pcall(function()
+                    HXD_SEND_WEBHOOK(webhook_url, {
+                        username = cheat_client.config.webhook_username or "bladee",
+                        embeds = { embed }
+                    })
+                end)
+            end
+
+            local function desert_mist_player_near(radius)
+                local _, _, root = desert_mist_get_character()
+                if not root then
+                    return false, nil, math.huge
+                end
+
+                local target_radius = radius or cheat_client.config.desert_mist_player_radius or 200
+                local closest_name = nil
+                local closest_distance = math.huge
+
+                for _, other_player in ipairs(plrs:GetPlayers()) do
+                    if other_player ~= plr and other_player.Character then
+                        local other_root = FindFirstChild(other_player.Character, "HumanoidRootPart")
+                        local other_humanoid = FindFirstChildOfClass(other_player.Character, "Humanoid")
+
+                        if other_root and (not other_humanoid or other_humanoid.Health > 0) then
+                            local distance = (other_root.Position - root.Position).Magnitude
+                            if distance < closest_distance then
+                                closest_distance = distance
+                                closest_name = other_player.Name
+                            end
+                        end
+                    end
+                end
+
+                return closest_distance <= target_radius, closest_name, closest_distance
+            end
+
+            local function desert_mist_apply_noclip(character)
+                if not character or not character.Parent then return end
+
+                for _, object in ipairs(character:GetDescendants()) do
+                    if object:IsA("BasePart") then
+                        if desert_mist_collision_states[object] == nil then
+                            desert_mist_collision_states[object] = object.CanCollide
+                        end
+                        object.CanCollide = false
+                    end
+                end
+            end
+
+            local function desert_mist_restore_collision()
+                local normal_noclip_on = Toggles and Toggles.noclip and Toggles.noclip.Value
+                if not normal_noclip_on then
+                    for part, can_collide in pairs(desert_mist_collision_states) do
+                        if part and part.Parent and part:IsA("BasePart") then
+                            pcall(function()
+                                part.CanCollide = can_collide
+                            end)
+                        end
+                    end
+                end
+                table.clear(desert_mist_collision_states)
+            end
+
+            local function desert_mist_start_noclip()
+                if desert_mist_noclip_connection then return end
+
+                desert_mist_noclip_connection = utility:Connection(rs.RenderStepped, function()
+                    if shared.is_unloading or not desert_mist_enabled() then return end
+
+                    local character, _, root = desert_mist_get_character()
+                    if not character or not root then return end
+
+                    desert_mist_apply_noclip(character)
+
+                    if desert_mist_hold_position and not desert_mist_farm_escaping then
+                        root.AssemblyLinearVelocity = Vector3.zero
+                        root.AssemblyAngularVelocity = Vector3.zero
+
+                        if (root.Position - DESERT_MIST_FARM_POSITION).Magnitude > 0.75 then
+                            local rotation_only = root.CFrame - root.Position
+                            root.CFrame = CFrame.new(DESERT_MIST_FARM_POSITION) * rotation_only
+                        end
+                    end
+                end)
+            end
+
+            local function desert_mist_stop_noclip()
+                if desert_mist_noclip_connection then
+                    desert_mist_noclip_connection:Disconnect()
+                    desert_mist_noclip_connection = nil
+                end
+                desert_mist_restore_collision()
+            end
+
+            local function desert_mist_cancel_tween()
+                if desert_mist_active_tween then
+                    pcall(function()
+                        desert_mist_active_tween:Cancel()
+                    end)
+                    desert_mist_active_tween = nil
+                end
+            end
+
+            local function desert_mist_cleanup()
+                desert_mist_hold_position = false
+                desert_mist_cancel_tween()
+                desert_mist_stop_noclip()
+            end
+
+            local function desert_mist_disable_toggle()
+                cheat_client.config.desert_mist_farm = false
+                local toggle = Toggles and Toggles.desert_mist_farm
+                if toggle and toggle.Value then
+                    toggle:SetValue(false)
+                else
+                    desert_mist_cleanup()
+                end
+            end
+
+            local function desert_mist_serverhop(reason)
+                if hopping_active then return end
+                hopping_active = true
+
+                desert_mist_send_webhook("serverhop", string.format("Server hopping: %s", reason or "Routine hop"))
+
+                mem:SetItem("desert_mist_farming", "true")
+                mem:SetItem("desert_mist_session_total", tostring(session_farmed))
+                mem:SetItem("desert_mist_session_start", tostring(session_start_time))
+
+                if plr.Character and cs:HasTag(plr.Character, "Danger") then
+                    local danger_wait = 0
+                    repeat
+                        task.wait(0.2)
+                        danger_wait = danger_wait + 1
+                    until not cs:HasTag(plr.Character, "Danger") or danger_wait > 50
+                end
+
+                if not shared.on_teleport_setup then
+                    shared.on_teleport_setup = true
+                    local queue_func = queueteleport or queue_on_teleport
+                    if queue_func then
+                        pcall(function()
+                            local loader_script = string.format([[
+                                local success, code = pcall(function() return game:HttpGet("%s") end)
+                                if success and code then
+                                    local fn, compileErr = loadstring(code)
+                                    if fn then pcall(fn) end
+                                end
+                            ]], SCRIPT_LOADER_URL)
+                            queue_func(loader_script)
+                        end)
+                    end
+                end
+
+                task.wait(0.5)
+                utility:Serverhop()
+            end
+
+            local function desert_mist_tween_to(position, watch_players)
+                if not desert_mist_enabled() then
+                    return false, "disabled"
+                end
+
+                local character, humanoid, root = desert_mist_get_character()
+                if not character or not humanoid or not root then
+                    return false, "character"
+                end
+
+                desert_mist_start_noclip()
+                desert_mist_apply_noclip(character)
+                desert_mist_cancel_tween()
+
+                local distance = (root.Position - position).Magnitude
+                if distance <= 0.5 then
+                    local rotation_only = root.CFrame - root.Position
+                    root.CFrame = CFrame.new(position) * rotation_only
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                    return true, "complete"
+                end
+
+                pcall(function()
+                    humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                end)
+
+                local function restore_humanoid_state()
+                    pcall(function()
+                        if humanoid and humanoid.Parent then
+                            humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+                            humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+                        end
+                    end)
+                end
+
+                local rotation_only = root.CFrame - root.Position
+                local duration = math.max(distance / DESERT_MIST_TWEEN_SPEED, 0.05)
+                local tween = ts:Create(
+                    root,
+                    TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
+                    {CFrame = CFrame.new(position) * rotation_only}
+                )
+
+                desert_mist_active_tween = tween
+                tween:Play()
+
+                while desert_mist_enabled()
+                    and desert_mist_active_tween == tween
+                    and tween.PlaybackState == Enum.PlaybackState.Playing
+                do
+                    local current_character, _, current_root = desert_mist_get_character()
+                    if not current_character or not current_root then
+                        pcall(function() tween:Cancel() end)
+                        desert_mist_active_tween = nil
+                        restore_humanoid_state()
+                        return false, "character"
+                    end
+
+                    desert_mist_apply_noclip(current_character)
+
+                    if watch_players then
+                        local player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                        if player_near then
+                            pcall(function() tween:Cancel() end)
+                            desert_mist_active_tween = nil
+                            restore_humanoid_state()
+                            return false, "player"
+                        end
+                    end
+
+                    rs.Heartbeat:Wait()
+                end
+
+                local completed = tween.PlaybackState == Enum.PlaybackState.Completed
+                if desert_mist_active_tween == tween then
+                    desert_mist_active_tween = nil
+                end
+
+                restore_humanoid_state()
+
+                if not desert_mist_enabled() then
+                    pcall(function() tween:Cancel() end)
+                    return false, "disabled"
+                end
+
+                if completed then
+                    local current_character, _, current_root = desert_mist_get_character()
+                    if current_character and current_root then
+                        desert_mist_apply_noclip(current_character)
+                        current_root.AssemblyLinearVelocity = Vector3.zero
+                        current_root.AssemblyAngularVelocity = Vector3.zero
+                    end
+                    return true, "complete"
+                end
+
+                return false, "cancelled"
+            end
+
+            local function desert_mist_find_verdien()
+                local character = plr.Character
+                local backpack = plr:FindFirstChildOfClass("Backpack")
+
+                return (character and FindFirstChild(character, DESERT_MIST_TOOL))
+                    or (backpack and FindFirstChild(backpack, DESERT_MIST_TOOL))
+            end
+
+            local function desert_mist_equip_verdien()
+                local character, humanoid = desert_mist_get_character()
+                if not character or not humanoid then return nil end
+
+                local tool = desert_mist_find_verdien()
+                if not tool or not tool:IsA("Tool") then return nil end
+
+                if tool.Parent ~= character then
+                    pcall(function()
+                        humanoid:EquipTool(tool)
+                    end)
+                    task.wait(0.05)
+                end
+
+                return FindFirstChild(character, DESERT_MIST_TOOL)
+            end
+
+            local function desert_mist_can_charge(character)
+                if not character or FindFirstChildWhichIsA(character, "ForceField") then return false end
+                if FindFirstChild(character, "Grabbed") then return false end
+                if FindFirstChild(character, "Climbing") then return false end
+                if FindFirstChild(character, "ClimbCoolDown") then return false end
+                if FindFirstChild(character, "ManaStop") then return false end
+                if FindFirstChild(character, "SpellBlocking") then return false end
+                if FindFirstChild(character, "ActiveCast") then return false end
+                if FindFirstChild(character, "Stun") then return false end
+                if cs:HasTag(character, "Knocked") then return false end
+                if cs:HasTag(character, "Unconscious") then return false end
+                return true
+            end
+
+            local function desert_mist_initialize_mana_remote()
+                if mana_remote or not vim then return end
+                pcall(function()
+                    vim:SendKeyEvent(true, Enum.KeyCode.G, false, game)
+                    task.wait(0.15)
+                    vim:SendKeyEvent(false, Enum.KeyCode.G, false, game)
+                end)
+                task.wait(0.2)
+            end
+
+            local function desert_mist_charge_full()
+                local character = plr.Character
+                local mana = character and FindFirstChild(character, "Mana")
+                if not character or not mana or not utility then return false, "retry" end
+
+                desert_mist_initialize_mana_remote()
+                if not mana_remote or not utility.charge_mana or not utility.decharge_mana then
+                    return false, "retry"
+                end
+
+                if not desert_mist_can_charge(character) then return false, "retry" end
+
+                if FindFirstChild(character, "Charge") then
+                    utility:decharge_mana()
+                    task.wait(0.15)
+                end
+
+                local started_at = os.clock()
+                while desert_mist_enabled() and mana.Parent == character and mana.Value < 100 do
+                    local player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                    if player_near then
+                        if FindFirstChild(character, "Charge") then
+                            utility:decharge_mana()
+                        end
+                        return false, "player"
+                    end
+
+                    if not desert_mist_can_charge(character) then
+                        if FindFirstChild(character, "Charge") then
+                            utility:decharge_mana()
+                        end
+                        return false, "retry"
+                    end
+
+                    desert_mist_equip_verdien()
+                    utility:charge_mana()
+                    task.wait(0.08)
+
+                    if os.clock() - started_at >= 10 then
+                        if FindFirstChild(character, "Charge") then
+                            utility:decharge_mana()
+                        end
+                        return false, "retry"
+                    end
+                end
+
+                if FindFirstChild(character, "Charge") then
+                    utility:decharge_mana()
+                end
+
+                return desert_mist_enabled() and mana.Value >= 100, "complete"
+            end
+
+            local function desert_mist_escape()
+                if desert_mist_farm_escaping then return end
+                desert_mist_farm_escaping = true
+                desert_mist_hold_position = false
+
+                local _, player_name, player_distance = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                local threat_msg = player_name and string.format("Threat: %s within %.0f studs", player_name, player_distance) or "Player detected nearby"
+
+                library:Notify("Desert Mist Farm: " .. threat_msg .. " - escaping!")
+                desert_mist_send_webhook("threat", threat_msg .. ". Executing evasive retreat.")
+
+                local _, _, root = desert_mist_get_character()
+                if root and desert_mist_enabled() then
+                    local below_position = root.Position - Vector3.new(0, DESERT_MIST_ESCAPE_DROP, 0)
+                    local dropped = desert_mist_tween_to(below_position, false)
+                    if dropped and desert_mist_enabled() then
+                        desert_mist_tween_to(DESERT_MIST_ESCAPE_POSITION, false)
+                    end
+                end
+
+                desert_mist_farm_escaping = false
+
+                if cheat_client.config.desert_mist_serverhop_on_player then
+                    desert_mist_serverhop(string.format("Player threat (%s)", threat_msg))
+                else
+                    desert_mist_disable_toggle()
+                end
+            end
+
+            local function run_desert_mist_farm()
+                if desert_mist_farm_running then return end
+                desert_mist_farm_running = true
+                desert_mist_farm_escaping = false
+                desert_mist_hold_position = false
+                hopping_active = false
+
+                if not desert_mist_enabled() then
+                    desert_mist_cleanup()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                desert_mist_start_noclip()
+
+                local character, _, root = desert_mist_get_character()
+                if not character or not root then
+                    library:Notify("Desert Mist Farm: character is not ready")
+                    desert_mist_disable_toggle()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                local initial_distance = (root.Position - DESERT_MIST_FARM_POSITION).Magnitude
+                if initial_distance > DESERT_MIST_START_RADIUS then
+                    library:Notify(string.format("Desert Mist Farm: you must be within %d studs of the farm point (current: %.0f)", DESERT_MIST_START_RADIUS, initial_distance))
+                    desert_mist_disable_toggle()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                local player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                if player_near then
+                    desert_mist_escape()
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                desert_mist_send_webhook("started", string.format("Approaching farm spot from %.0f studs.", initial_distance))
+
+                local reached_farm, reason = desert_mist_tween_to(DESERT_MIST_FARM_POSITION, true)
+                if not reached_farm then
+                    if reason == "player" and desert_mist_enabled() then
+                        desert_mist_escape()
+                    elseif desert_mist_enabled() then
+                        desert_mist_disable_toggle()
+                    end
+                    desert_mist_farm_running = false
+                    return
+                end
+
+                desert_mist_hold_position = true
+
+                while desert_mist_enabled() do
+                    player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                    if player_near then
+                        desert_mist_escape()
+                        break
+                    end
+
+                    local current_inv = count_desert_mist()
+                    if cheat_client.config.desert_mist_serverhop_on_target and current_inv >= cheat_client.config.desert_mist_target_count then
+                        library:Notify(string.format("Desert Mist Farm: Reached target count of %d!", cheat_client.config.desert_mist_target_count))
+                        desert_mist_send_webhook("target", string.format("Target goal reached: %d/%d mists collected.", current_inv, cheat_client.config.desert_mist_target_count))
+                        desert_mist_serverhop(string.format("Target mist goal reached (%d)", current_inv))
+                        break
+                    end
+
+                    local verdien = desert_mist_equip_verdien()
+                    if not verdien then
+                        task.wait(0.2)
+                        continue
+                    end
+
+                    local charged, charge_reason = desert_mist_charge_full()
+                    if not charged then
+                        if charge_reason == "player" and desert_mist_enabled() then
+                            desert_mist_escape()
+                            break
+                        end
+                        task.wait(0.1)
+                        continue
+                    end
+
+                    player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                    if player_near then
+                        desert_mist_escape()
+                        break
+                    end
+
+                    verdien = desert_mist_equip_verdien()
+                    if verdien and utility and utility.LeftClick then
+                        utility:LeftClick()
+                    end
+
+                    local wait_start = os.clock()
+                    while desert_mist_enabled() and (os.clock() - wait_start < DESERT_MIST_LOOP_DELAY) do
+                        player_near = desert_mist_player_near(cheat_client.config.desert_mist_player_radius)
+                        if player_near then
+                            desert_mist_escape()
+                            break
+                        end
+
+                        desert_mist_pickup_nearby()
+                        desert_mist_equip_verdien()
+
+                        local new_inv = count_desert_mist()
+                        if new_inv > current_inv then
+                            local diff = new_inv - current_inv
+                            session_farmed = session_farmed + diff
+                            current_inv = new_inv
+                            mem:SetItem("desert_mist_session_total", tostring(session_farmed))
+
+                            if (session_farmed - last_reported_farmed) >= (cheat_client.config.desert_mist_webhook_interval or 5) then
+                                last_reported_farmed = session_farmed
+                                desert_mist_send_webhook("stats", string.format("Harvested %d additional Desert Mist(s).", diff))
+                            end
+                        end
+
+                        if Options and Options.desert_mist_status_lbl then
+                            Options.desert_mist_status_lbl:SetText(string.format("Status: Farming | Inv: %d (+%d)", current_inv, session_farmed))
+                        end
+
+                        task.wait(0.25)
+                    end
+                end
+
+                desert_mist_cleanup()
+                desert_mist_farm_running = false
+
+                if Options and Options.desert_mist_status_lbl then
+                    Options.desert_mist_status_lbl:SetText(string.format("Status: Idle | Inv: %d (+%d)", count_desert_mist(), session_farmed))
+                end
+            end
+
+            cheat_client.desert_mist = {
+                toggle = function(value)
+                    if value then
+                        if not desert_mist_farm_running then
+                            task.spawn(run_desert_mist_farm)
+                        end
+                    else
+                        mem:RemoveItem("desert_mist_farming")
+                        desert_mist_hold_position = false
+                        desert_mist_cancel_tween()
+                        desert_mist_cleanup()
+                    end
+                end,
+                send_stats_webhook = function(custom_reason)
+                    desert_mist_send_webhook("stats", custom_reason or "Manual Status Report")
+                end,
+                get_count = count_desert_mist,
+                get_session_farmed = function() return session_farmed end
+            }
+
+            -- Auto-resume across server hops
+            task.spawn(function()
+                if mem:HasItem("desert_mist_farming") and mem:GetItem("desert_mist_farming") == "true" then
+                    task.wait(2)
+                    pcall(function()
+                        if plr.PlayerGui and FindFirstChild(plr.PlayerGui, "StartMenu") then
+                            if FindFirstChild(plr.PlayerGui.StartMenu, "Choices") and FindFirstChild(plr.PlayerGui.StartMenu.Choices, "Play") then
+                                firesignal(plr.PlayerGui.StartMenu.Choices.Play.MouseButton1Click)
+                            end
+                        end
+                    end)
+
+                    repeat task.wait(0.25) until plr.Character
+                    repeat task.wait(0.25) until FindFirstChild(plr.Character, "HumanoidRootPart")
+                    task.wait(1.5)
+
+                    if Toggles and Toggles.desert_mist_farm then
+                        desert_mist_send_webhook("resumed", "Reconnected after server hop. Resuming Desert Mist farming.")
+                        Toggles.desert_mist_farm:SetValue(true)
+                    end
+                end
+            end)
         end
     end
     end
