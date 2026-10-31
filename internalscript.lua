@@ -20697,10 +20697,14 @@ end
                         job_id
                     )
 
+                    local mock_x, mock_y, mock_z = 3990, 437, -1009
+                    local mock_world = (is_khei or game.PlaceId == 3541987450 or game.PlaceId == 14341521240) and "khei" or "gaia"
+                    local mock_map_url = string.format("https://stella.heroinhound.cc/map/explore?world=%s&at=%d,%d,%d", mock_world, mock_x, mock_y, mock_z)
+
                     -- Artifact Info field
                     local artifact_info = string.format(
-                        "**Artifact:** %s\n**Area:** %s\n**Last Gate:** %s\n**Picked Up:** False 🔴",
-                        mock_artifact, mock_area, "None"
+                        "**Artifact:** %s\n**Area:** %s\n**Coordinates:** `%d, %d, %d`\n**Live Map:** [Open Live Map](%s)\n%s\n**Last Gate:** %s\n**Picked Up:** False 🔴",
+                        mock_artifact, mock_area, mock_x, mock_y, mock_z, mock_map_url, mock_map_url, "None"
                     )
 
                     local embed_fields = {
@@ -20736,6 +20740,7 @@ end
 
                     local embed = {
                         title = "Artifact Found",
+                        url = mock_map_url,
                         description = string.format(
                             "**Server Name:** `%s`\n**Region:** `%s`\n**Players:** `%d/23`",
                             server_name ~= "" and server_name or "Unknown",
@@ -26004,6 +26009,37 @@ end
                             local last_gate = (cheat_client.trinket_bot and cheat_client.trinket_bot.last_gate_destination) or "None"
                             local artifact_info_lines = string.format("**Artifact:** %s", artifact_list)
                             artifact_info_lines = artifact_info_lines .. string.format("\n**Area:** %s", area ~= "None" and area or "Unknown")
+
+                            local map_world = (is_khei or game.PlaceId == 3541987450 or game.PlaceId == 14341521240) and "khei" or "gaia"
+                            local primary_map_url = nil
+
+                            if #valid_artifacts == 1 then
+                                local pos = (first_object and first_object.Position) or Vector3.zero
+                                local x, y, z = math.round(pos.X), math.round(pos.Y), math.round(pos.Z)
+                                primary_map_url = string.format("https://stella.heroinhound.cc/map/explore?world=%s&at=%d,%d,%d", map_world, x, y, z)
+                                artifact_info_lines = artifact_info_lines .. string.format("\n**Coordinates:** `%d, %d, %d`", x, y, z)
+                                artifact_info_lines = artifact_info_lines .. string.format("\n**Live Map:** [Open Live Map](%s)\n%s", primary_map_url, primary_map_url)
+                            else
+                                local coords_list = {}
+                                local map_list = {}
+                                for _, art in ipairs(valid_artifacts) do
+                                    if art.object and art.object.Parent then
+                                        local pos = art.object.Position
+                                        local x, y, z = math.round(pos.X), math.round(pos.Y), math.round(pos.Z)
+                                        local url = string.format("https://stella.heroinhound.cc/map/explore?world=%s&at=%d,%d,%d", map_world, x, y, z)
+                                        if not primary_map_url then
+                                            primary_map_url = url
+                                        end
+                                        table.insert(coords_list, string.format("• **%s:** `%d, %d, %d`", art.name, x, y, z))
+                                        table.insert(map_list, string.format("• **%s:** [Live Map](%s)\n%s", art.name, url, url))
+                                    end
+                                end
+                                if #coords_list > 0 then
+                                    artifact_info_lines = artifact_info_lines .. "\n**Coordinates:**\n" .. table.concat(coords_list, "\n")
+                                    artifact_info_lines = artifact_info_lines .. "\n**Live Maps:**\n" .. table.concat(map_list, "\n")
+                                end
+                            end
+
                             artifact_info_lines = artifact_info_lines .. string.format("\n**Last Gate:** %s", last_gate)
 
                             table.insert(embed_fields, {
@@ -26039,6 +26075,7 @@ end
 
                             local embed = {
                                 title = "Artifact Found",
+                                url = primary_map_url,
                                 description = description,
                                 color = 0x785AF3,
                                 thumbnail = {
@@ -28716,6 +28753,34 @@ end
 
                 desert_mist_hold_position = true
 
+                -- Drop ForceField if present (can't charge mana or cast with FF)
+                do
+                    local ff_character, _, ff_root = desert_mist_get_character()
+                    if ff_root and ff_character and FindFirstChildWhichIsA(ff_character, "ForceField") then
+                        library:Notify("Desert Mist Farm: ForceField active — tweening out to remove it")
+                        desert_mist_hold_position = false
+
+                        -- Tween 6 studs sideways to pop the FF
+                        local pop_pos = ff_root.Position + Vector3.new(6, 0, 0)
+                        desert_mist_tween_to(pop_pos, false)
+
+                        -- Wait up to 3s for FF to disappear
+                        local ff_wait = 0
+                        repeat
+                            task.wait(0.15)
+                            ff_wait = ff_wait + 1
+                            ff_character = plr.Character
+                        until not ff_character or not FindFirstChildWhichIsA(ff_character, "ForceField") or ff_wait > 20
+
+                        -- Return to farm position
+                        if desert_mist_enabled() then
+                            desert_mist_tween_to(DESERT_MIST_FARM_POSITION, false)
+                        end
+                        desert_mist_hold_position = true
+                        library:Notify("Desert Mist Farm: ForceField cleared — resuming farm")
+                    end
+                end
+
                 while desert_mist_enabled() do
                     danger_p, danger_tool, danger_d = desert_mist_check_dangerous_items()
                     if danger_p then
@@ -28855,6 +28920,12 @@ end
                     if Toggles and Toggles.desert_mist_farm then
                         desert_mist_send_webhook("resumed", "Reconnected after server hop. Resuming Desert Mist farming.")
                         Toggles.desert_mist_farm:SetValue(true)
+                        -- Hide menu so it doesn't stay open during farm (mirrors normal botting behaviour)
+                        pcall(function()
+                            if library and library.ToggleKeybind then
+                                library.ToggleKeybind:SetValue(false)
+                            end
+                        end)
                     end
                 end
             end)
