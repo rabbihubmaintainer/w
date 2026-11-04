@@ -13584,7 +13584,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     show_in_artifact_stream = Toggles.show_in_artifact_stream and Toggles.show_in_artifact_stream.Value or false,
                     better_botting_logs = Toggles.better_botting_logs and Toggles.better_botting_logs.Value or false,
                     ping_check_enabled = Toggles.PingCheckEnabled and Toggles.PingCheckEnabled.Value or false,
-                    max_ping_threshold = Options.MaxPingThreshold and Options.MaxPingThreshold.Value or 350
+                    max_ping_threshold = Options.MaxPingThreshold and Options.MaxPingThreshold.Value or 350,
+                    twenty_three_mode = Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value or false,
+                    twenty_three_expected_count = Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23,
+                    twenty_three_alert_count = Options.TwentyThreeAlertCount and Options.TwentyThreeAlertCount.Value or 5,
+                    twenty_three_active_only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value
                 }
                 pcall(function()
                     mem:SetItem("trinket_bot_settings", httpService:JSONEncode(settings_to_save))
@@ -14073,6 +14077,267 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local currently_dropping = false
             local droppedTools = {}
 
+            local whitelist_23_file = "rabbihub/whitelist_23.json"
+            cheat_client.whitelist_23 = cheat_client.whitelist_23 or {}
+            trinket_bot.twenty_three_triggered = false
+            trinket_bot.twenty_three_alert_running = false
+
+            local function save_whitelist_23()
+                pcall(function()
+                    if writefile then
+                        if not isfolder("rabbihub") then makefolder("rabbihub") end
+                        local json = Services.HttpService:JSONEncode(cheat_client.whitelist_23 or {})
+                        writefile(whitelist_23_file, json)
+                    end
+                end)
+            end
+
+            local function load_whitelist_23()
+                cheat_client.whitelist_23 = {}
+                pcall(function()
+                    if isfile and readfile and isfile(whitelist_23_file) then
+                        local json = readfile(whitelist_23_file)
+                        local data = Services.HttpService:JSONDecode(json)
+                        if type(data) == "table" then
+                            cheat_client.whitelist_23 = data
+                        end
+                    end
+                end)
+            end
+            load_whitelist_23()
+
+            local function get_server_player_names()
+                local names = {}
+                for _, p in ipairs(plrs:GetPlayers()) do
+                    if p ~= plr then
+                        table.insert(names, p.Name)
+                    end
+                end
+                table.sort(names)
+                if #names == 0 then
+                    table.insert(names, "None")
+                end
+                return names
+            end
+
+            local function get_whitelist_display_list()
+                local list = {}
+                if cheat_client.whitelist_23 then
+                    for _, name in ipairs(cheat_client.whitelist_23) do
+                        table.insert(list, tostring(name))
+                    end
+                end
+                table.sort(list)
+                if #list == 0 then
+                    table.insert(list, "None")
+                end
+                return list
+            end
+
+            local function update_server_players_dropdown()
+                if Options and Options.TwentyThreeServerPlayers and Options.TwentyThreeServerPlayers.SetValues then
+                    pcall(function()
+                        Options.TwentyThreeServerPlayers:SetValues(get_server_player_names())
+                    end)
+                end
+            end
+
+            local function update_whitelist_dropdowns()
+                if Options and Options.TwentyThreeWhitelistedUsers and Options.TwentyThreeWhitelistedUsers.SetValues then
+                    pcall(function()
+                        Options.TwentyThreeWhitelistedUsers:SetValues(get_whitelist_display_list())
+                    end)
+                end
+            end
+
+            local function is_player_whitelisted(player)
+                if not player then return false end
+                if player == plr then return true end
+                if not cheat_client.whitelist_23 then return false end
+                local p_name = player.Name:lower()
+                local p_id = tostring(player.UserId)
+                for _, entry in ipairs(cheat_client.whitelist_23) do
+                    local str = tostring(entry):lower()
+                    if str == p_name or str == p_id then
+                        return true
+                    end
+                end
+                return false
+            end
+
+            local function add_to_whitelist(username, skip_save)
+                if not username or username == "" or username == "None" then return false end
+                cheat_client.whitelist_23 = cheat_client.whitelist_23 or {}
+                local lower = username:lower()
+                for _, existing in ipairs(cheat_client.whitelist_23) do
+                    if tostring(existing):lower() == lower then
+                        return false
+                    end
+                end
+                table.insert(cheat_client.whitelist_23, username)
+                if not skip_save then
+                    save_whitelist_23()
+                    update_whitelist_dropdowns()
+                end
+                return true
+            end
+
+            local function remove_from_whitelist(username)
+                if not username or username == "" or username == "None" then return false end
+                if not cheat_client.whitelist_23 then return false end
+                local lower = username:lower()
+                for i, existing in ipairs(cheat_client.whitelist_23) do
+                    if tostring(existing):lower() == lower then
+                        table.remove(cheat_client.whitelist_23, i)
+                        save_whitelist_23()
+                        update_whitelist_dropdowns()
+                        return true
+                    end
+                end
+                return false
+            end
+
+            local function clear_whitelist()
+                cheat_client.whitelist_23 = {}
+                save_whitelist_23()
+                update_whitelist_dropdowns()
+            end
+
+            local function trigger_twenty_three_alert(reason)
+                if not (Toggles and Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value) then
+                    return
+                end
+                if trinket_bot.twenty_three_triggered then
+                    return
+                end
+
+                trinket_bot.twenty_three_triggered = true
+                trinket_bot.path_running = false
+
+                if active_tween_data and active_tween_data.tween then
+                    pcall(function()
+                        active_tween_data.tween:Cancel()
+                    end)
+                end
+
+                if mem and mem.RemoveItem then
+                    pcall(function()
+                        mem:RemoveItem("botstarted")
+                        mem:RemoveItem("serverhop_count")
+                    end)
+                end
+
+                -- Quickly sit in menu: Invoke ReturnToMenu remote without logging/kicking/serverhopping
+                pcall(function()
+                    if rps.Requests and FindFirstChild(rps.Requests, "ReturnToMenu") then
+                        rps.Requests.ReturnToMenu:InvokeServer()
+                    end
+                end)
+
+                task.spawn(function()
+                    if trinket_bot.twenty_three_alert_running then return end
+                    trinket_bot.twenty_three_alert_running = true
+
+                    local alert_count = Options and Options.TwentyThreeAlertCount and Options.TwentyThreeAlertCount.Value or 5
+                    if alert_count < 3 then alert_count = 3 end
+
+                    if cheat_client.config and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                        task.spawn(function()
+                            pcall(function()
+                                local server_name, server_region = get_server_info()
+                                local p_count = #plrs:GetPlayers()
+                                local embed = {
+                                    title = "⚠️ 23 MODE ALERT — SITTING IN MENU",
+                                    description = string.format("**Reason:** %s\n**Server:** `%s` (%s)\n**Players:** `%d/23`\n**JobId:** `%s`",
+                                        reason,
+                                        server_name ~= "" and server_name or "Unknown",
+                                        server_region ~= "" and server_region or "Unknown",
+                                        p_count,
+                                        tostring(game.JobId)
+                                    ),
+                                    color = 0xFF2222,
+                                    footer = { text = string.format("Job: %s", tostring(game.JobId)) },
+                                    timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+                                }
+                                HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
+                                    username = cheat_client.config.webhook_username or "bladee",
+                                    content = "@everyone ⚠️ **23 MODE ALERT: SITTING IN MENU** ⚠️",
+                                    embeds = { embed }
+                                })
+                            end)
+                        end)
+                    end
+
+                    for i = 1, alert_count do
+                        -- Moderator detected noise
+                        pcall(function()
+                            if utility and utility.sound then
+                                utility:sound("rbxassetid://1693890393", 4)
+                            end
+                        end)
+                        pcall(function()
+                            local sound = Instance.new("Sound")
+                            sound.SoundId = "rbxassetid://1693890393"
+                            sound.Volume = 5
+                            sound.Parent = Services.CoreGui or game:GetService("SoundService")
+                            sound:Play()
+                            Services.Debris:AddItem(sound, 4)
+                        end)
+
+                        if library and library.Notify then
+                            library:Notify({
+                                Title = string.format("⚠️ 23 MODE ALERT [%d/%d]", i, alert_count),
+                                Description = reason,
+                                Time = 10
+                            })
+                        end
+
+                        pcall(function()
+                            if plr.Character and rps.Requests and FindFirstChild(rps.Requests, "ReturnToMenu") then
+                                rps.Requests.ReturnToMenu:InvokeServer()
+                            end
+                        end)
+
+                        task.wait(1.5)
+                    end
+
+                    trinket_bot.twenty_three_alert_running = false
+                end)
+            end
+
+            local function check_twenty_three_status()
+                if not (Toggles and Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value) then
+                    return true
+                end
+                if trinket_bot.twenty_three_triggered then
+                    return false
+                end
+
+                local expected_count = Options and Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23
+                local players = plrs:GetPlayers()
+                local current_count = #players
+
+                if current_count < expected_count then
+                    trigger_twenty_three_alert(string.format("Server count dropped to %d/%d (expected %d)!", current_count, expected_count, expected_count))
+                    return false
+                end
+
+                local unwhitelisted = {}
+                for _, other_p in ipairs(players) do
+                    if other_p ~= plr and not is_player_whitelisted(other_p) then
+                        table.insert(unwhitelisted, other_p.Name)
+                    end
+                end
+
+                if #unwhitelisted > 0 then
+                    local names_str = table.concat(unwhitelisted, ", ")
+                    trigger_twenty_three_alert(string.format("Non-whitelisted player(s) in server: %s!", names_str))
+                    return false
+                end
+
+                return true
+            end
+
             local function ExecutePath(test_mode)
                 if not cheat_client or not cheat_client.config then
                     return
@@ -14144,6 +14409,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 trinket_bot.path_running = true
+
+                if Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value then
+                    trinket_bot.twenty_three_triggered = false
+                    if not check_twenty_three_status() then
+                        trinket_bot.path_running = false
+                        return
+                    end
+                end
 
                 if not plr.Character or not FindFirstChild(plr.Character, "HumanoidRootPart") then
                     trinket_bot.path_running = false
@@ -14286,6 +14559,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 for _, other_player in next, plrs:GetPlayers() do
                     if other_player ~= plr and is_moderator(other_player) then
                         handle_moderator_detection(other_player)
+                        return
+                    end
+                end
+
+                if Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value then
+                    if not check_twenty_three_status() then
                         return
                     end
                 end
@@ -15006,11 +15285,18 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 local i = 1
                 while i <= #trinket_bot.path_points do
-                    if not trinket_bot.path_running or trinket_bot.moderator_detected then
-                        if trinket_bot.moderator_detected then
+                    if not trinket_bot.path_running or trinket_bot.moderator_detected or trinket_bot.twenty_three_triggered then
+                        if trinket_bot.twenty_three_triggered then
+                            library:Notify("23 Mode triggered - exiting main loop")
+                        elseif trinket_bot.moderator_detected then
                             library:Notify("Moderator detected - exiting main loop")
                         end
                         break
+                    end
+                    if Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value then
+                        if not check_twenty_three_status() then
+                            break
+                        end
                     end
 
                     local point = trinket_bot.path_points[i]
@@ -16993,9 +17279,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                if not test_mode and not mem:HasItem("botstarted") then
+                if (not test_mode and not mem:HasItem("botstarted")) or trinket_bot.twenty_three_triggered then
                     trinket_bot.path_running = false
-                    library:Notify("Bot stopped")
+                    if trinket_bot.twenty_three_triggered then
+                        library:Notify("23 Mode triggered - bot halted in menu")
+                    else
+                        library:Notify("Bot stopped")
+                    end
                     return
                 end
 
@@ -17125,9 +17415,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify(string.format("Waiting %d minutes before restarting path...", wait_time_minutes))
 
                         for i = 1, wait_time_seconds do
-                            if not trinket_bot.path_running or not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
+                            if not trinket_bot.path_running or trinket_bot.twenty_three_triggered or not (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true") then
                                 library:Notify("Bot stopped during wait period")
                                 return
+                            end
+                            if Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value then
+                                if not check_twenty_three_status() then
+                                    return
+                                end
                             end
                             task.wait(1)
                         end
@@ -17742,6 +18037,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if Toggles.KickOnTrinket then Toggles.KickOnTrinket:SetValue(settings.kick_on_trinket or false) end
                 if Options.KickTrinketList then Options.KickTrinketList:SetValue(settings.kick_trinket_list or {}) end
                 if Toggles.StayInServer then Toggles.StayInServer:SetValue(settings.stay_in_server or false) end
+                if Toggles.TwentyThreeMode then Toggles.TwentyThreeMode:SetValue(settings.twenty_three_mode or false) end
+                if Options.TwentyThreeExpectedCount then Options.TwentyThreeExpectedCount:SetValue(settings.twenty_three_expected_count or 23) end
+                if Options.TwentyThreeAlertCount then Options.TwentyThreeAlertCount:SetValue(settings.twenty_three_alert_count or 5) end
+                if Toggles.TwentyThreeActiveOnlyWhenBotting then Toggles.TwentyThreeActiveOnlyWhenBotting:SetValue(settings.twenty_three_active_only_when_botting == nil and true or settings.twenty_three_active_only_when_botting) end
                 if Toggles.ReequipGateInLoop then Toggles.ReequipGateInLoop:SetValue(settings.reequip_gate_in_loop == nil and true or settings.reequip_gate_in_loop) end
                 if Toggles.AutoEquipPerfloraPebble then Toggles.AutoEquipPerfloraPebble:SetValue(settings.auto_equip_perflora_pebble or false) end
                 if Options.TimeBetweenLooting then Options.TimeBetweenLooting:SetValue(settings.time_between_looting or 5) end
@@ -17824,6 +18123,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         kick_on_trinket = Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value or false,
                         kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
                         stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
+                        twenty_three_mode = Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value or false,
+                        twenty_three_expected_count = Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23,
+                        twenty_three_alert_count = Options.TwentyThreeAlertCount and Options.TwentyThreeAlertCount.Value or 5,
+                        twenty_three_active_only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value,
                         reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                         auto_equip_perflora_pebble = Toggles.AutoEquipPerfloraPebble and Toggles.AutoEquipPerfloraPebble.Value or false,
                         time_between_looting = Options.TimeBetweenLooting and Options.TimeBetweenLooting.Value or 5,
@@ -18003,6 +18306,32 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 TrinketBotServerhop(string.format("ILLUSIONIST IN SERVER; %s - Serverhopping before spawn", other_player.Name))
                                 return
                             end
+                        end
+                    end
+
+                    if Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value then
+                        if trinket_bot.twenty_three_triggered then
+                            library:Notify("23 Mode triggered — staying in menu")
+                            return
+                        end
+                        local expected_count = Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23
+                        local cur_count = #plrs:GetPlayers()
+                        if cur_count < expected_count then
+                            library:Notify(string.format("23 Mode: Server only has %d/%d players — sitting in menu", cur_count, expected_count))
+                            trigger_twenty_three_alert(string.format("Server has %d/%d players before spawning!", cur_count, expected_count))
+                            return
+                        end
+                        local unwhitelisted = {}
+                        for _, other_player in next, plrs:GetPlayers() do
+                            if other_player ~= plr and not is_player_whitelisted(other_player) then
+                                table.insert(unwhitelisted, other_player.Name)
+                            end
+                        end
+                        if #unwhitelisted > 0 then
+                            local names = table.concat(unwhitelisted, ", ")
+                            library:Notify(string.format("23 Mode: Non-whitelisted player (%s) — sitting in menu", names))
+                            trigger_twenty_three_alert(string.format("Non-whitelisted player in server: %s!", names))
+                            return
                         end
                     end
 
@@ -18472,6 +18801,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             kick_on_trinket = Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value or false,
                             kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
                             stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
+                            twenty_three_mode = Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value or false,
+                            twenty_three_expected_count = Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23,
+                            twenty_three_alert_count = Options.TwentyThreeAlertCount and Options.TwentyThreeAlertCount.Value or 5,
+                            twenty_three_active_only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value,
                             reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                             auto_equip_perflora_pebble = Toggles.AutoEquipPerfloraPebble and Toggles.AutoEquipPerfloraPebble.Value or false,
                             time_between_looting = Options.TimeBetweenLooting and Options.TimeBetweenLooting.Value or 5,
@@ -18603,6 +18936,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             kick_on_trinket = Toggles.KickOnTrinket and Toggles.KickOnTrinket.Value or false,
                             kick_trinket_list = Options.KickTrinketList and Options.KickTrinketList.Value or {},
                             stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false,
+                            twenty_three_mode = Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value or false,
+                            twenty_three_expected_count = Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23,
+                            twenty_three_alert_count = Options.TwentyThreeAlertCount and Options.TwentyThreeAlertCount.Value or 5,
+                            twenty_three_active_only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value,
                             reequip_gate_in_loop = Toggles.ReequipGateInLoop == nil and true or Toggles.ReequipGateInLoop.Value,
                             auto_equip_perflora_pebble = Toggles.AutoEquipPerfloraPebble and Toggles.AutoEquipPerfloraPebble.Value or false,
                             time_between_looting = Options.TimeBetweenLooting and Options.TimeBetweenLooting.Value or 5,
@@ -18635,6 +18972,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Text = "Start Path",
                 Tooltip = "Requires Blatant Mode to be enabled",
                 Func = function()
+                    trinket_bot.twenty_three_triggered = false
                     task.spawn(ExecutePath, false)
                 end
             })
@@ -18643,6 +18981,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Text = "Test Path",
                 Tooltip = "Requires Blatant Mode to be enabled",
                 Func = function()
+                    trinket_bot.twenty_three_triggered = false
                     task.spawn(ExecutePath, true)
                 end
             })
@@ -18819,6 +19158,218 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Suffix = "m",
                 Tooltip = "Wait time before respawning and restarting path (in minutes)"
             })
+
+            local group_twenty_three = Tabs.Botting:AddRightGroupbox("23 Mode")
+
+            group_twenty_three:AddToggle("TwentyThreeMode", {
+                Text = "Enable 23 Mode",
+                Default = false,
+                Tooltip = "Monitors server count (23) and player whitelist. Menus and alerts if an account logs or stranger joins."
+            })
+
+            group_twenty_three:AddSlider("TwentyThreeExpectedCount", {
+                Text = "Expected Player Count",
+                Default = 23,
+                Min = 1,
+                Max = 23,
+                Rounding = 0,
+                Compact = true,
+                Tooltip = "Expected player count (default 23). Menus if server count drops below this."
+            })
+
+            group_twenty_three:AddSlider("TwentyThreeAlertCount", {
+                Text = "Alert Repeat Count",
+                Default = 5,
+                Min = 2,
+                Max = 15,
+                Rounding = 0,
+                Compact = true,
+                Tooltip = "Number of times to sound moderator noise and notification alert"
+            })
+
+            group_twenty_three:AddToggle("TwentyThreeActiveOnlyWhenBotting", {
+                Text = "Only When Botting",
+                Default = true,
+                Tooltip = "When enabled, checks only run while bot is running/started. When disabled, checks run constantly."
+            })
+
+            group_twenty_three:AddDivider()
+
+            group_twenty_three:AddButton({
+                Text = "Whitelist Entire Server",
+                Func = function()
+                    local count = 0
+                    for _, p in ipairs(plrs:GetPlayers()) do
+                        if p ~= plr then
+                            if add_to_whitelist(p.Name, true) then
+                                count = count + 1
+                            end
+                        end
+                    end
+                    save_whitelist_23()
+                    update_whitelist_dropdowns()
+                    library:Notify(string.format("Whitelisted %d player(s) from current server!", count))
+                end,
+                Tooltip = "Instantly whitelists all players currently in the server"
+            })
+
+            group_twenty_three:AddDivider()
+
+            group_twenty_three:AddDropdown("TwentyThreeServerPlayers", {
+                Text = "Server Players",
+                Values = get_server_player_names(),
+                Multi = false,
+                Tooltip = "Select a player currently connected to whitelist"
+            })
+
+            group_twenty_three:AddButton({
+                Text = "Whitelist Selected Player",
+                Func = function()
+                    local selected = Options.TwentyThreeServerPlayers and Options.TwentyThreeServerPlayers.Value
+                    if selected and selected ~= "" and selected ~= "None" then
+                        if add_to_whitelist(selected) then
+                            library:Notify(string.format("Added %s to whitelist!", selected))
+                        else
+                            library:Notify(string.format("%s is already whitelisted!", selected))
+                        end
+                    else
+                        library:Notify("Please select a player from the dropdown!")
+                    end
+                end,
+                Tooltip = "Adds the player selected in the dropdown to the whitelist"
+            })
+
+            group_twenty_three:AddButton({
+                Text = "Refresh Server Players List",
+                Func = function()
+                    update_server_players_dropdown()
+                    library:Notify("Refreshed server player list")
+                end,
+                Tooltip = "Updates dropdown with all players currently connected"
+            })
+
+            group_twenty_three:AddDivider()
+
+            group_twenty_three:AddInput("TwentyThreeManualUser", {
+                Default = "",
+                Finished = false,
+                Text = "Manual Username",
+                Placeholder = "Enter username...",
+                Tooltip = "Type a username manually to whitelist"
+            })
+
+            group_twenty_three:AddButton({
+                Text = "Add Manual Username",
+                Func = function()
+                    local user = Options.TwentyThreeManualUser and Options.TwentyThreeManualUser.Value or ""
+                    user = user:match("^%s*(.-)%s*$")
+                    if user and user ~= "" then
+                        if add_to_whitelist(user) then
+                            library:Notify(string.format("Whitelisted: %s", user))
+                        else
+                            library:Notify(string.format("%s is already whitelisted!", user))
+                        end
+                    else
+                        library:Notify("Please enter a username!")
+                    end
+                end,
+                Tooltip = "Adds manual username to whitelist"
+            })
+
+            group_twenty_three:AddDivider()
+
+            group_twenty_three:AddDropdown("TwentyThreeWhitelistedUsers", {
+                Text = "Whitelisted Players",
+                Values = get_whitelist_display_list(),
+                Multi = false,
+                Tooltip = "View or select whitelisted players"
+            })
+
+            group_twenty_three:AddButton({
+                Text = "Remove Selected Whitelist",
+                Func = function()
+                    local selected = Options.TwentyThreeWhitelistedUsers and Options.TwentyThreeWhitelistedUsers.Value
+                    if selected and selected ~= "" and selected ~= "None" then
+                        if remove_from_whitelist(selected) then
+                            library:Notify(string.format("Removed %s from whitelist", selected))
+                        else
+                            library:Notify(string.format("%s not found in whitelist", selected))
+                        end
+                    else
+                        library:Notify("Please select a whitelisted player to remove!")
+                    end
+                end,
+                Tooltip = "Removes selected username from whitelist"
+            })
+
+            group_twenty_three:AddButton({
+                Text = "Clear All Whitelist",
+                Func = function()
+                    clear_whitelist()
+                    library:Notify("Cleared entire 23 Mode whitelist")
+                end,
+                Tooltip = "Clears all whitelisted players"
+            })
+
+            group_twenty_three:AddDivider()
+
+            group_twenty_three:AddButton({
+                Text = "Reset 23 Mode Alert State",
+                Func = function()
+                    trinket_bot.twenty_three_triggered = false
+                    library:Notify("23 Mode alert state reset. Bot can resume.")
+                end,
+                Tooltip = "Resets triggered status after server is fixed"
+            })
+
+            -- Real-time 23 Mode listeners
+            utility:Connection(Services.Players.PlayerRemoving, function(leaving_player)
+                if leaving_player == plr then return end
+                task.wait(0.1)
+                update_server_players_dropdown()
+                if not (Toggles and Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value) then return end
+                if trinket_bot.twenty_three_triggered then return end
+
+                local only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value
+                if only_when_botting and not (trinket_bot.path_running or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")) then
+                    return
+                end
+
+                local expected_count = Options.TwentyThreeExpectedCount and Options.TwentyThreeExpectedCount.Value or 23
+                local remaining_count = #plrs:GetPlayers()
+                if remaining_count < expected_count then
+                    trigger_twenty_three_alert(string.format("Account %s logged out! Server count dropped to %d/%d!", leaving_player.Name, remaining_count, expected_count))
+                end
+            end)
+
+            utility:Connection(Services.Players.PlayerAdded, function(new_player)
+                if new_player == plr then return end
+                task.wait(0.3)
+                update_server_players_dropdown()
+                if not (Toggles and Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value) then return end
+                if trinket_bot.twenty_three_triggered then return end
+
+                local only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value
+                if only_when_botting and not (trinket_bot.path_running or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")) then
+                    return
+                end
+
+                if not is_player_whitelisted(new_player) then
+                    trigger_twenty_three_alert(string.format("Non-whitelisted player joined: %s!", new_player.Name))
+                end
+            end)
+
+            task.spawn(function()
+                while shared and not shared.is_unloading do
+                    if Toggles and Toggles.TwentyThreeMode and Toggles.TwentyThreeMode.Value and not trinket_bot.twenty_three_triggered then
+                        local only_when_botting = Toggles.TwentyThreeActiveOnlyWhenBotting == nil and true or Toggles.TwentyThreeActiveOnlyWhenBotting.Value
+                        if not only_when_botting or (trinket_bot.path_running or (mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true")) then
+                            check_twenty_three_status()
+                        end
+                    end
+                    task.wait(1)
+                end
+            end)
 
             if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 then
                 local lives_table = {
@@ -21728,12 +22279,14 @@ end
                         "SkipIllusionist", "PickupScrolls", "PickupIceEssence", "PickupEventItems",
                         "PickupTrinkets", "DisableGPURendering", "JoinOldestServer", "AutoPopPDs",
                         "AutoPopIdolOfWars", "KickOnTrinket", "StayInServer", "ReequipGateInLoop",
-                        "AutoEquipPerfloraPebble", "show_in_artifact_stream", "PingCheckEnabled"
+                        "AutoEquipPerfloraPebble", "show_in_artifact_stream", "PingCheckEnabled",
+                        "TwentyThreeMode", "TwentyThreeActiveOnlyWhenBotting"
                     }
                     local auto_save_options = {
                         "PickupMythicsArtifacts", "EmergencyServerhopConditions", "AutoDropItems",
                         "KickTrinketList", "TimeBetweenLooting", "ProximityCheck", "CriticalDistance",
-                        "MinPlayerCount", "TrinketBotSpeed", "MaxPingThreshold"
+                        "MinPlayerCount", "TrinketBotSpeed", "MaxPingThreshold",
+                        "TwentyThreeExpectedCount", "TwentyThreeAlertCount"
                     }
 
                     for _, toggle_name in ipairs(auto_save_toggles) do
