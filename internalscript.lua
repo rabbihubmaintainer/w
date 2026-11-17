@@ -25,14 +25,6 @@ repeat task.wait() until Players.LocalPlayer.Backpack
 local StarterGui = Services.StarterGui
 repeat task.wait() until StarterGui:FindFirstChild("LeaderboardGui")
 
-pcall(function()
-    if getconnections then
-        for _,v in pairs(getconnections(Services.ScriptContext.Error)) do
-            v:Disable();
-        end
-    end
-end)
-
 loadstring([[
     function LPH_NO_VIRTUALIZE(f) return f end;
 ]])();
@@ -125,11 +117,234 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     if getgenv()[key] and type(getgenv()[key]) == "table" then return end
     getgenv()[key] = setmetatable({}, { __tostring = function() return "nil" end })
 
+    -- All resources below belong to this execution, never to the global task/Instance APIs.
+    local native_task = task
+    local native_instance = Instance
+    local native_hookfunction = hookfunction
+    local native_hookmetamethod = hookmetamethod
+    local lifecycle = {
+        stopping = false,
+        stopped = false,
+        threads = {},
+        connections = setmetatable({}, {__mode = "k"}),
+        instances = setmetatable({}, {__mode = "k"}),
+        tweens = setmetatable({}, {__mode = "k"}),
+        properties = setmetatable({}, {__mode = "k"}),
+        humanoid_states = setmetatable({}, {__mode = "k"}),
+        callbacks = setmetatable({}, {__mode = "k"}),
+        hooks = {},
+        cleanups = {},
+        errors = {},
+        initialization_thread = coroutine.running(),
+    }
+
+    function lifecycle:Try(label, callback, ...)
+        local result = table.pack(pcall(callback, ...))
+        if not result[1] then
+            local message = "[rabbihub] " .. label .. ": " .. tostring(result[2])
+            table.insert(self.errors, message)
+            warn(message)
+        end
+        return table.unpack(result, 1, result.n)
+    end
+
+    function lifecycle:AddCleanup(label, callback)
+        table.insert(self.cleanups, {label = label, callback = callback})
+    end
+
+    function lifecycle:Run(callback, ...)
+        if self.stopping then return end
+        local thread = coroutine.running()
+        -- Signal handlers can yield; Disconnect alone does not stop those handlers.
+        local previous = self.threads[thread]
+        self.threads[thread] = true
+        local result = table.pack(pcall(callback, ...))
+        self.threads[thread] = previous
+        if not result[1] then
+            error(result[2], 0)
+        end
+        return table.unpack(result, 2, result.n)
+    end
+
+    function lifecycle:Schedule(method, duration, callback, ...)
+        if self.stopping then
+            local stopped_thread = coroutine.create(function() end)
+            coroutine.close(stopped_thread)
+            return stopped_thread
+        end
+        local thread
+        if type(callback) == "thread" then
+            thread = callback
+        else
+            assert(type(callback) == "function", "Expected a function or coroutine")
+            thread = coroutine.create(function(...)
+                local result = table.pack(pcall(self.Run, self, callback, ...))
+                self.threads[coroutine.running()] = nil
+                if not result[1] then error(result[2], 0) end
+                return table.unpack(result, 2, result.n)
+            end)
+        end
+        -- Register before spawn: Roblox may run a spawned coroutine immediately.
+        self.threads[thread] = true
+        if method == "delay" then
+            native_task.delay(duration, thread, ...)
+        else
+            native_task[method](thread, ...)
+        end
+        if coroutine.status(thread) == "dead" then self.threads[thread] = nil end
+        return thread
+    end
+
+    function lifecycle:Quiesce()
+        local current = coroutine.running()
+        local pending = {}
+        for thread in pairs(self.threads) do pending[#pending + 1] = thread end
+        if self.initialization_thread and self.initialization_thread ~= current then
+            pending[#pending + 1] = self.initialization_thread
+        end
+        for _, thread in ipairs(pending) do
+            if thread ~= current and coroutine.status(thread) ~= "dead" then
+                self:Try("cancel task", native_task.cancel, thread)
+            end
+            self.threads[thread] = nil
+        end
+        for connection in pairs(self.connections) do
+            self:Try("disconnect signal", function() connection:Disconnect() end)
+        end
+        table.clear(self.connections)
+        for tween in pairs(self.tweens) do
+            self:Try("cancel tween", function() tween:Cancel() end)
+        end
+        table.clear(self.tweens)
+    end
+
+    function lifecycle:RestoreHooks()
+        for index = #self.hooks, 1, -1 do
+            local hook = self.hooks[index]
+            if hook.metamethod then
+                self:Try("restore " .. hook.metamethod, native_hookmetamethod,
+                    hook.target, hook.metamethod, hook.original)
+            else
+                self:Try("restore function hook", native_hookfunction, hook.target, hook.original)
+            end
+        end
+        table.clear(self.hooks)
+    end
+
+    function lifecycle:Finish()
+        for index = #self.cleanups, 1, -1 do
+            local cleanup = self.cleanups[index]
+            self:Try(cleanup.label, cleanup.callback)
+        end
+        table.clear(self.cleanups)
+        for object, callbacks in pairs(self.callbacks) do
+            for property, saved in pairs(callbacks) do
+                self:Try("restore " .. property, function() object[property] = saved.value end)
+            end
+        end
+        table.clear(self.callbacks)
+        for humanoid, states in pairs(self.humanoid_states) do
+            for state, enabled in pairs(states) do
+                self:Try("restore humanoid state", function() humanoid:SetStateEnabled(state, enabled) end)
+            end
+        end
+        table.clear(self.humanoid_states)
+        for object, properties in pairs(self.properties) do
+            for property, saved in pairs(properties) do
+                self:Try("restore " .. property, function() object[property] = saved.value end)
+            end
+        end
+        table.clear(self.properties)
+        self:RestoreHooks()
+        for instance in pairs(self.instances) do
+            self:Try("destroy owned instance", function() instance:Destroy() end)
+        end
+        table.clear(self.instances)
+        self.stopped = true
+    end
+
+    function lifecycle:Remember(object, property)
+        if not object then return end
+        local properties = self.properties[object]
+        if not properties then
+            properties = {}
+            self.properties[object] = properties
+        end
+        if properties[property] == nil then
+            local ok, value = pcall(function() return object[property] end)
+            if ok then properties[property] = {value = value} end
+        end
+    end
+
+    function lifecycle:RememberHumanoidState(humanoid, state)
+        if not humanoid then return end
+        local states = self.humanoid_states[humanoid]
+        if not states then
+            states = {}
+            self.humanoid_states[humanoid] = states
+        end
+        if states[state] == nil then
+            local ok, enabled = pcall(function() return humanoid:GetStateEnabled(state) end)
+            if ok then states[state] = enabled end
+        end
+    end
+
+    function lifecycle:RememberCallback(object, property, fallback)
+        local callbacks = self.callbacks[object]
+        if not callbacks then
+            callbacks = {}
+            self.callbacks[object] = callbacks
+        end
+        if callbacks[property] ~= nil then return end
+        local ok, callback = pcall(function()
+            if getcallbackvalue then return getcallbackvalue(object, property) end
+            return object[property]
+        end)
+        if ok then callbacks[property] = {value = callback}
+        else callbacks[property] = {value = fallback} end
+    end
+
+    function lifecycle:CreateTween(service, ...)
+        local tween = service:Create(...)
+        self.tweens[tween] = true
+        return tween
+    end
+
+    local task = setmetatable({
+        spawn = function(callback, ...) return lifecycle:Schedule("spawn", nil, callback, ...) end,
+        defer = function(callback, ...) return lifecycle:Schedule("defer", nil, callback, ...) end,
+        delay = function(duration, callback, ...) return lifecycle:Schedule("delay", duration, callback, ...) end,
+        cancel = function(thread)
+            lifecycle.threads[thread] = nil
+            return native_task.cancel(thread)
+        end,
+    }, {__index = native_task})
+    local Instance = setmetatable({
+        new = function(...)
+            local instance = native_instance.new(...)
+            lifecycle.instances[instance] = true
+            return instance
+        end,
+    }, {__index = native_instance})
+    local function hookfunction(target, replacement)
+        local original = native_hookfunction(target, replacement)
+        table.insert(lifecycle.hooks, {target = target, original = original})
+        return original
+    end
+    local function hookmetamethod(target, name, replacement)
+        local original = native_hookmetamethod(target, name, replacement)
+        table.insert(lifecycle.hooks, {target = target, metamethod = name, original = original})
+        return original
+    end
+    local unload_script
+
+
     local success, err = xpcall(function()
     local old_destroy = nil
     do
         if not getgenv().lolololol then
             old_destroy = hookfunction(workspace.Destroy, function(Self)
+                if lifecycle.stopping then return old_destroy(Self) end
                 if not checkcaller() then
                     if tostring(Self) == "CharacterHandler" then
                         return
@@ -145,6 +360,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local lockThreads = {}
 
                     cw = hookfunction(coroutine.wrap, newcclosure(function(f,...)
+                        if lifecycle.stopping then return cw(f, ...) end
                         if not checkcaller() then
                             if type(f) == "function" and islclosure(f) then
                                 local consts, upvals = getconstants(f), getupvalues(f)
@@ -164,10 +380,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                                 if g3 and lockThreads[g3] then
                                     local plrs_local = Services.Players
-                                    while true do
-                                        plrs_local.LocalPlayer:Kick("Ban Attempt")
-                                        task.wait()
-                                    end
+                                    plrs_local.LocalPlayer:Kick("Ban Attempt")
+                                    return function() end
                                 end
                             end
 
@@ -190,6 +404,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     local old
                     old = hookfunction(coroutine.wrap, newcclosure(function(func)
+                        if lifecycle.stopping then return old(func) end
                         if not checkcaller() then
                             if type(func) == "function" and islclosure(func) then
                                 local upvals = getupvalues(func)
@@ -244,12 +459,16 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
     local plr = plrs.LocalPlayer
     local mouse = cloneref(plr:GetMouse())
+    local function default_mouse_state()
+        return {Hit = mouse.Hit, Target = mouse.Target, UnitRay = mouse.UnitRay, X = mouse.X, Y = mouse.Y}
+    end
 
     local FindFirstChild = game.FindFirstChild
     local WaitForChild = game.WaitForChild
     local FindFirstChildWhichIsA = game.FindFirstChildWhichIsA
     local FindFirstChildOfClass = game.FindFirstChildOfClass
 
+    local cheat_client
     local last_y_position = 0
     task.spawn(function()
         while task.wait(0.1) do
@@ -271,7 +490,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         mem:RemoveItem("joined_via_23_joiner")
         task.spawn(function()
             task.wait(2) 
-            if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+            if cheat_client and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                 pcall(function()
                     local embed = {
                         title = " 23 Joiner: Successfully Joined",
@@ -315,6 +534,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
     local live_folder = ws:WaitForChild("Live")
     local headers = {["content-type"] = "application/json"}
 
+    for _, property in ipairs({"MouseBehavior", "MouseIconEnabled"}) do lifecycle:Remember(uis, property) end
+    if ws.CurrentCamera then
+        for _, property in ipairs({"FieldOfView", "CameraType"}) do lifecycle:Remember(ws.CurrentCamera, property) end
+    end
+    for _, name in ipairs({"Blindness", "Blur", "areacolor"}) do
+        local effect = FindFirstChild(lit, name)
+        if effect then lifecycle:Remember(effect, "Enabled") end
+    end
+    if txt.ChatWindowConfiguration then lifecycle:Remember(txt.ChatWindowConfiguration, "Enabled") end
+    if getfpscap then
+        local ok, cap = pcall(getfpscap)
+        if ok then lifecycle.original_fps_cap = cap end
+    end
     local teleport_failed = false
     local teleport_fail_reason = ""
     local teleport_init_failed_connection = tps.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
@@ -323,10 +555,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
     end)
 
+    lifecycle.connections[teleport_init_failed_connection] = true
+
     local is_gaia = game.PlaceId == 5208655184;
     local is_khei = game.PlaceId == 3541987450 or game.PlaceId == 14341521240;
 
+    local StartCapture, StopCapture
+    local fast_remove
+    local aimbot_fov_circle, silent_circle, spellvis, snapvis
     local updatePlayerLabel, getPlayerColor
+    local hasListedTools, hasObserveTool
+    local player_monitor_connections = {}
     local last_area_restore = nil
     local ingredient_folder = nil
     local auto_pot_active = false
@@ -428,7 +667,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             ["PageDown"] = "pgdwn",
 
             ["Comma"] = ",",
-            ["Period"] = ".",
             ["Semicolon"] = ",",
             ["Colon"] = ":",
             ["GreaterThan"] = ">",
@@ -467,7 +705,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         windowActive = true,
         notifications = {},
     }
-    local cheat_client = {
+    cheat_client = {
         config = {
             anticheat_mode = "Normal",
             perflora_teleport = false,
@@ -1000,7 +1238,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local abs, sqrt, random = math.abs, math.sqrt, math.random
             local max, min, ceil = math.max, math.min, math.ceil
             
-            function fast_remove(tbl, value)
+            fast_remove = function(tbl, value)
                 for i = #tbl, 1, -1 do
                     if tbl[i] == value then
                         tbl[i] = tbl[#tbl]
@@ -1010,7 +1248,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
                 return false
             end
-            function ToBase(n, b)
+            local function ToBase(n, b)
                 n = floor(n)
                 if not b or b == 10 then return tostring(n) end
                 local digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -1579,7 +1817,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             if AllType == 0 then AllType = nil end
 
             for i = 1, Length do
-                local KeyType,Key = AllType or Buffer:ReadUnsigned(TypeIntegerLength)
+                local KeyType,Key = AllType or Buffer:ReadUnsigned(TypeIntegerLength), nil
 
                 local KeyRealType = IdToType(KeyType)
                 if KeyRealType == "Integer" then
@@ -1621,9 +1859,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 elseif ValueRealType == "Region3int16" then
                     Value = Region3int16.new(Vector3int16.new(ReadFloat(),ReadFloat(),ReadFloat()),Vector3int16.new(ReadFloat(),ReadFloat(),ReadFloat()))
                 elseif ValueRealType == "Vector3" then
-                    Value = Vector3.new(ReadFloat(Value.X),ReadFloat(Value.Y),ReadFloat(Value.Z))
+                    Value = Vector3.new(ReadFloat(),ReadFloat(),ReadFloat())
                 elseif ValueRealType == "Vector2" then
-                    Value = Vector2.new(ReadFloat(Value.X),ReadFloat(Value.Y))
+                    Value = Vector2.new(ReadFloat(),ReadFloat())
                 elseif ValueRealType == "EnumItem" then
                     Value = Enum[Buffer:ReadString()][Buffer:ReadString()]
                 elseif ValueRealType == "Enums" then
@@ -1668,8 +1906,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 instanceProperties["Parent"] = nil
             end
             for property, value in pairs(instanceProperties) do
-                if property and value then
-                    if property == "Size" or property == "Size" then
+                if property ~= nil and value ~= nil then
+                    if property == "Size" or property == "size" then
                         if instanceType == "Text" then
                             instance.Size = value
                         else
@@ -1679,8 +1917,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     elseif property == "Position" or property == "position" then
                         if instanceType == "Text" then
-                            local xPosition = ((((parent and parent.Position) or Vector2.new(0, 0)).X) + (value.X.Scale * ((typeof(parent.Size) == "number" and parent.TextBounds) or parent.Size).X)) + value.X.Offset
-                            local yPosition = ((((parent and parent.Position) or Vector2.new(0, 0)).Y) + (value.Y.Scale * ((typeof(parent.Size) == "number" and parent.TextBounds) or parent.Size).Y)) + value.Y.Offset
+                            local xPosition = ((((parent and parent.Position) or Vector2.new(0, 0)).X) + (value.X.Scale * ((parent and ((typeof(parent.Size) == "number" and parent.TextBounds) or parent.Size)) or ws.CurrentCamera.ViewportSize).X)) + value.X.Offset
+                            local yPosition = ((((parent and parent.Position) or Vector2.new(0, 0)).Y) + (value.Y.Scale * ((parent and ((typeof(parent.Size) == "number" and parent.TextBounds) or parent.Size)) or ws.CurrentCamera.ViewportSize).Y)) + value.Y.Offset
                             instance.Position = Vector2.new(xPosition, yPosition)
                         else
                             local xPosition = ((((parent and parent.Position) or Vector2.new(0, 0)).X) + value.X.Scale * ((parent and parent.Size) or ws.CurrentCamera.ViewportSize).X) + value.X.Offset
@@ -1706,13 +1944,13 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     
         function utility:Update(instance, instanceProperty, instanceValue, instanceParent)
-            if instanceProperty == "Size" or instanceProperty == "Size" then
+            if instanceProperty == "Size" or instanceProperty == "size" then
                 local xSize = (instanceValue.X.Scale * ((instanceParent and instanceParent.Size) or ws.CurrentCamera.ViewportSize).X) + instanceValue.X.Offset
                 local ySize = (instanceValue.Y.Scale * ((instanceParent and instanceParent.Size) or ws.CurrentCamera.ViewportSize).Y) + instanceValue.Y.Offset
                 instance.Size = Vector2.new(xSize, ySize)
             elseif instanceProperty == "Position" or instanceProperty == "position" then
-                    local xPosition = ((((instanceParent and instanceParent.Position) or Vector2.new(0, 0)).X) + (instanceValue.X.Scale * ((typeof(instanceParent.Size) == "number" and instanceParent.TextBounds) or instanceParent.Size).X)) + instanceValue.X.Offset
-                    local yPosition = ((((instanceParent and instanceParent.Position) or Vector2.new(0, 0)).Y) + (instanceValue.Y.Scale * ((typeof(instanceParent.Size) == "number" and instanceParent.TextBounds) or instanceParent.Size).Y)) + instanceValue.Y.Offset
+                    local xPosition = ((((instanceParent and instanceParent.Position) or Vector2.new(0, 0)).X) + (instanceValue.X.Scale * ((instanceParent and ((typeof(instanceParent.Size) == "number" and instanceParent.TextBounds) or instanceParent.Size)) or ws.CurrentCamera.ViewportSize).X)) + instanceValue.X.Offset
+                    local yPosition = ((((instanceParent and instanceParent.Position) or Vector2.new(0, 0)).Y) + (instanceValue.Y.Scale * ((instanceParent and ((typeof(instanceParent.Size) == "number" and instanceParent.TextBounds) or instanceParent.Size)) or ws.CurrentCamera.ViewportSize).Y)) + instanceValue.Y.Offset
                     instance.Position = Vector2.new(xPosition, yPosition)
             elseif instanceProperty == "Color" or instanceProperty == "color" then
                 if typeof(instanceValue) == "string" then
@@ -1731,7 +1969,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     
         function utility:Connection(connectionType, connectionCallback, skip_tracking)
-            local connection = connectionType:Connect(connectionCallback)
+            local connection = connectionType:Connect(function(...)
+                return lifecycle:Run(connectionCallback, ...)
+            end)
+            lifecycle.connections[connection] = true
+            if lifecycle.stopping then connection:Disconnect() end
             if shared.connections and not skip_tracking then
                 shared.connections[#shared.connections + 1] = connection
             end
@@ -1807,463 +2049,161 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         end
     
         function utility:Unload(removeitem)
-            if shared then
-                shared.is_unloading = true
+            if lifecycle.stopping then return end
+            lifecycle.stopping = true
+            shared.is_unloading = true
+            shared.SPRLS = nil
+            auto_pot_active = false
+            auto_craft_active = false
+            if cheat_client.trinket_bot then cheat_client.trinket_bot.path_running = false end
+            if cheat_client.macro_system then cheat_client.macro_system.stopping = true end
+
+            -- Stop producers first. No sleeps, full-map scans, or state deletion here.
+            lifecycle:Quiesce()
+            local function cleanup(label, callback, ...)
+                return lifecycle:Try("unload " .. label, callback, ...)
+            end
+            local function disconnect(connection)
+                if connection then cleanup("disconnect", function() connection:Disconnect() end) end
+            end
+            disconnect(teleport_init_failed_connection)
+            disconnect(shared.on_teleport_connection)
+            for _, connections in ipairs({shared.connections, shared.hidden_connections, streamer_connections, hooked_connections}) do
+                for _, connection in pairs(connections) do disconnect(connection) end
+                table.clear(connections)
+            end
+            for _, connection in pairs(disabled_connections) do
+                cleanup("enable game connection", function() connection:Enable() end)
+            end
+            table.clear(disabled_connections)
+            shared.on_teleport_connection = nil
+            shared.on_teleport_setup = false
+
+            for _, action in ipairs({"BlockAutoParryInputs", "BlockAutoParryMouse", "BlockMouse", "FreecamKeyboard"}) do
+                cleanup("unbind " .. action, function() cas:UnbindAction(action) end)
+            end
+            local logger = cheat_client.chat_logger_instance
+            if logger then cleanup("chat logger", function() logger:Unload() end) end
+            cheat_client.chat_logger_instance = nil
+
+            local macros = cheat_client.macro_system
+            if macros then
+                for _, connection in pairs(macros.macro_connections or {}) do disconnect(connection) end
+                for _, connections in pairs(macros.keybind_connections or {}) do
+                    for _, connection in pairs(connections) do disconnect(connection) end
+                end
+                if macros.is_running then table.clear(macros.is_running) end
+            end
+            if cheat_client.apply_streamer then
+                cleanup("streamer mode", function() cheat_client:apply_streamer(false) end)
+            end
+            if cheat_client.stop_fling then cleanup("fling", cheat_client.stop_fling) end
+            if plr.Character and cheat_client.char_custom_restore then
+                cleanup("character appearance", cheat_client.char_custom_restore, plr.Character)
+            end
+            for _, name in ipairs({"restore_ambience", "restore_state", "legit_intent_cleanup", "proximity_cleanup"}) do
+                if type(cheat_client[name]) == "function" then
+                    cleanup(name, function() cheat_client[name](cheat_client) end)
+                end
+            end
+            if cheat_client.desert_mist and cheat_client.desert_mist.cleanup then
+                cleanup("desert mist", cheat_client.desert_mist.cleanup)
             end
 
-            task.wait(0.5)
-
-            pcall(function() utility:CompactConnections() end)
-
-            local success, err = pcall(function()
-                if teleport_init_failed_connection then
-                    pcall(function() teleport_init_failed_connection:Disconnect() end)
-                    teleport_init_failed_connection = nil
+            for callback, data in pairs(shared.SPROC or {}) do
+                if type(callback) == "function" and data.Index and data.Function then
+                    cleanup("spectator upvalue", function() debug.setupvalue(callback, data.Index, data.Function) end)
                 end
+            end
+            shared.SPROC = nil
 
-                if shared and shared.on_teleport_connection then
-                    pcall(function() shared.on_teleport_connection:Disconnect() end)
-                    shared.on_teleport_connection = nil
-                    shared.on_teleport_setup = false
+            if original_names[plr] and cheat_client.spoof_name then
+                cleanup("name", function() cheat_client:spoof_name(original_names[plr]) end)
+            end
+            table.clear(original_names)
+            -- Store the original roller object when spoofing; disconnect even if the UI was removed.
+            for _, data in pairs(original_days) do
+                disconnect(data.connection)
+                if data.object and data.object.Parent and data.text then
+                    cleanup("days text", function() data.object.Text = data.text end)
                 end
+            end
+            table.clear(original_days)
 
-                if shared and shared.connections then
-                    for i,v in pairs(shared.connections) do
-                        if v and v.Disconnect then
-                            pcall(function() v:Disconnect() end)
-                        end
+            cleanup("leaderboard buttons", function()
+                local player_gui = FindFirstChild(plr, "PlayerGui")
+                local leaderboard = player_gui and FindFirstChild(player_gui, "LeaderboardGui")
+                if not leaderboard then return end
+                for _, object in ipairs(leaderboard:GetDescendants()) do
+                    if object:IsA("TextButton") and object.Name == "SPB" then
+                        cleanup("leaderboard button", function() object:Destroy() end)
                     end
-                end
-                if shared and shared.drawing_containers then
-                    for i,v in pairs(shared.drawing_containers) do
-                        for _,k in pairs(v) do
-                            k:Remove()
-                        end
-                    end
-                    table.clear(shared.drawing_containers)
-                end
-                if shared then
-                    shared.drawing_containers = nil
-                    shared.connections = nil
-                end
-                cas:UnbindAction("BlockAutoParryInputs")
-                cas:UnbindAction("BlockAutoParryMouse")
-                cas:UnbindAction("BlockMouse")
-                cas:UnbindAction("FreecamKeyboard")
-                if cheat_client and cheat_client.chat_logger_instance then
-                    cheat_client.chat_logger_instance:Unload()
-                    cheat_client.chat_logger_instance = nil
-                end
-                if cheat_client and cheat_client.macro_system then
-                    cheat_client.macro_system.stopping = true
-
-                    if cheat_client.macro_system.macro_connections then
-                        for name, conn in pairs(cheat_client.macro_system.macro_connections) do
-                            if conn then
-                                pcall(function() conn:Disconnect() end)
-                            end
-                        end
-                    end
-
-                    if cheat_client.macro_system.keybind_connections then
-                        for name, conns in pairs(cheat_client.macro_system.keybind_connections) do
-                            if conns then
-                                for _, conn in ipairs(conns) do
-                                    if conn then
-                                        pcall(function() conn:Disconnect() end)
-                                    end
-                                end
-                            end
-                        end
-                        table.clear(cheat_client.macro_system.keybind_connections)
-                    end
-
-                    if cheat_client.macro_system.is_running then
-                        table.clear(cheat_client.macro_system.is_running)
-                    end
-
-                    if cheat_client.macro_system.loaded_macros then
-                        table.clear(cheat_client.macro_system.loaded_macros)
-                    end
-
-                    if cheat_client.macro_system.macro_connections then
-                        table.clear(cheat_client.macro_system.macro_connections)
-                    end
-
-                    cheat_client.macro_system = nil
-                end
-                if cheat_client and cheat_client.apply_streamer then
-                    pcall(function()
-                        cheat_client:apply_streamer(false)
-                    end)
-                end
-                if cheat_client and cheat_client.stop_fling then
-                    pcall(function()
-                        cheat_client.stop_fling()
-                    end)
-                end
-                if plr and plr.Character then
-                    pcall(function()
-                        if cheat_client and cheat_client.char_custom_restore then
-                            cheat_client.char_custom_restore(plr.Character)
-                        end
-                    end)
-                end
-                if shared and shared.library and shared.library.Unload then
-                    pcall(function() shared.library:Unload() end)
-                end
-                if shared and shared.SPRLS then
-                    shared.SPRLS = nil
-                end
-                if shared and shared.SPROC then
-                    LPH_NO_VIRTUALIZE(function()
-                        for v, data in pairs(shared.SPROC) do
-                            if typeof(v) == "function" and data.Index and data.Function then
-                                pcall(function()
-                                    debug.setupvalue(v, data.Index, data.Function)
-                                end)
-                            end
-                        end
-                    end)()
-                    shared.SPROC = nil
-                end
-                if shared then
-                    table.clear(shared)
-                end
-                utility = nil
-                library = nil
-                shared = nil
-                do
-                    if plr.Character and plr.Backpack and FindFirstChild(plr.Backpack, "HealerVision") then return end
-                    for _,v in pairs(workspace.Live:GetChildren()) do
-                        if v ~= plr.Character then
-                            local z = FindFirstChildWhichIsA(v, "Humanoid")
-                            if z then
-                                z.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
-                                if FindFirstChild(v, "MonsterInfo") then
-                                    z.NameDisplayDistance = 0
-                                end
-                                z.HealthDisplayDistance = 0
-                                z.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Subject
-                            end
-                        end
-                    end
-                end
-                if original_names[plr] then
-                    cheat_client:spoof_name(original_names[plr])
-                    original_names[plr] = nil
-                end
-                if original_days.hundred then
-                    local stat_gui = FindFirstChild(plr.PlayerGui, "StatGui")
-                    if stat_gui then
-                        local lives = FindFirstChild(stat_gui.Container.Health, "Lives")
-                        if lives then
-                            local rollers = {}
-                            for _, child in ipairs(lives:GetChildren()) do
-                                if child.Name == "Roller" and FindFirstChild(child, "Char") then
-                                    table.insert(rollers, child)
-                                end
-                            end
-
-                            if #rollers >= 4 then
-                                local has_thousand = #rollers >= 6
-
-                                local thousand, hundred, ten, one
-                                if has_thousand then
-                                    thousand = rollers[2]
-                                    hundred = rollers[3]
-                                    ten = rollers[4]
-                                    one = rollers[5]
-                                else
-                                    hundred = rollers[2]
-                                    ten = rollers[3]
-                                    one = rollers[4]
-                                end
-
-                                if thousand and original_days.thousand and original_days.thousand.text then
-                                    thousand.Char.Text = original_days.thousand.text
-                                end
-                                if hundred and original_days.hundred.text then
-                                    hundred.Char.Text = original_days.hundred.text
-                                end
-                                if ten and original_days.ten.text then
-                                    ten.Char.Text = original_days.ten.text
-                                end
-                                if one and original_days.one.text then
-                                    one.Char.Text = original_days.one.text
-                                end
-
-                                if original_days.thousand and original_days.thousand.connection then original_days.thousand.connection:Disconnect() end
-                                if original_days.hundred.connection then original_days.hundred.connection:Disconnect() end
-                                if original_days.ten.connection then original_days.ten.connection:Disconnect() end
-                                if original_days.one.connection then original_days.one.connection:Disconnect() end
-                            end
-                        end
-                    end
-                    original_days = {}
-                end
-                if plr.PlayerGui and FindFirstChild(plr.PlayerGui, "LeaderboardGui") then
-                    local scrollingFrame = plr.PlayerGui["LeaderboardGui"].MainFrame.ScrollingFrame
-                    for _, frame in pairs(scrollingFrame:GetChildren()) do
-                        if frame and frame.Text == "Ragoozer" then
-                            frame.Text = plr.Name
-                            frame.TextTransparency = 0
-                            
-                            for _, connection in pairs(getconnections(frame.MouseEnter)) do
-                                if not connection.Enabled then
-                                    connection:Enable()
-                                end
-                            end
-                            
-                            for _, connection in pairs(getconnections(frame.MouseLeave)) do
-                                if not connection.Enabled then
-                                    connection:Enable()
-                                end
-                            end
-                        else
-                            for _, connection in pairs(getconnections(frame.MouseEnter)) do
-                                connection:Enable()
-                            end
-                
-                            for _, connection in pairs(getconnections(frame.MouseLeave)) do
-                                connection:Enable()
-                            end
-                        end
-                    end
-                end
-                task.defer(function()
-                    pcall(function()
-                        local playerGui = FindFirstChild(plr, "PlayerGui")
-                        if not playerGui then return end
-
-                        local leaderboardGui = FindFirstChild(playerGui, "LeaderboardGui")
-                        if not leaderboardGui then return end
-
-                        local mainFrame = FindFirstChild(leaderboardGui, "MainFrame")
-                        if not mainFrame then return end
-
-                        local scrollingFrame = FindFirstChild(mainFrame, "ScrollingFrame")
-                        if not scrollingFrame then return end
-
-                        for _, v in pairs(scrollingFrame:GetDescendants()) do
-                            if v:IsA("TextButton") and v.Name == "SPB" then
-                                v:Destroy()
-                            end
-                        end
-                    end)
-                end)
-                if game.PlaceId == 5208655184 then
-                    container = FindFirstChild(ws, "Map")
-                elseif game.PlaceId == 3541987450 then
-                    container = ws
-                end
-                if game.PlaceId == 5208655184 or game.PlaceId == 14341521240 then
-                    txt.ChatWindowConfiguration.Enabled = false
-                end
-                if container and cheat_client then
-                    for _, v in next, container:GetDescendants() do
-                        if v:IsA("BasePart") and FindFirstChild(v, "TouchInterest") then
-                            local is_safe_name = cheat_client.safe_bricks and cheat_client.safe_bricks[v.Name]
-                            local is_safe_color = cheat_client.must_touch and cheat_client.must_touch[v.BrickColor.Number]
-                            if not is_safe_name and not is_safe_color then
-                                v.CanTouch = true
-                            end
-                        end
-                    end
-                end
-                do
-                    local monsters = FindFirstChild(workspace, "MonstersSpawns") or FindFirstChild(workspace, "MonsterSpawns")
-                    if monsters and FindFirstChild(monsters, "Triggers") then
-                        for _, obj in ipairs(monsters.Triggers:GetDescendants()) do
-                            if obj and obj.ClassName == "Part" then
-                                pcall(function()
-                                    obj.CanTouch = true
-                                end)
-                            end
-                        end
-                    end
-                end
-                for _, v in pairs(plrs:GetPlayers()) do
-                    local char = v.Character
-                    local backpack = FindFirstChild(v, "Backpack")
-
-                    local jack_char = char and FindFirstChild(char, "Jack")
-                    local jack_bag = backpack and FindFirstChild(backpack, "Jack")
-
-                    if (jack_char and jack_char:IsA("Tool")) or (jack_bag and jack_bag:IsA("Tool")) then
-                        v:SetAttribute("Hidden", true)
-
-                        if game.PlaceId == 3541987450 then
-                            local leaderstats = FindFirstChild(v, "leaderstats")
-                            if leaderstats then
-                                local hidden = FindFirstChild(leaderstats, "Hidden")
-                                if hidden and hidden:IsA("BoolValue") then
-                                    hidden.Value = true
-                                end
-                            end
-                        end
-                    end
-                end
-                if game.PlaceId ~= 14341521240 then
-                    plr.CameraMaxZoomDistance = 50
-                    plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom
-                end
-                if old_remote then
-                    pcall(hookfunction, Instance.new("RemoteEvent").FireServer, old_remote)
-                end
-                if old_hastag then
-                    pcall(hookfunction, cs.HasTag, old_hastag)
-                end
-                if old_destroy then
-                    pcall(hookfunction, ws.Destroy, old_destroy)
-                end
-                pcall(function()
-                    if plr.Character then
-                        ws.CurrentCamera.CameraSubject = plr.Character
-                        ws.CurrentCamera.CameraType = Enum.CameraType.Custom
-                    else
-                        if plr.PlayerGui and FindFirstChild(plr.PlayerGui, "LeaderboardGui") then
-                            FindFirstChild(plr.PlayerGui, "LeaderboardGui").Enabled = false
-                        end
-                        ws.CurrentCamera.CameraSubject = nil
-                        ws.CurrentCamera.CameraType = Enum.CameraType.Scriptable
-                    end
-                end)
-                auto_craft_active = nil
-                auto_pot_active = nil
-                dialogue_remote = nil
-                mana_remote = nil
-                done = nil
-                busy = nil
-                if FindFirstChild(plr.PlayerGui, "BardGui") then
-                    FindFirstChild(plr.PlayerGui, "BardGui").Enabled = true
-                end
-                pcall(function()
-                    local blindness = FindFirstChild(lit, "Blindness")
-                    if blindness then blindness.Enabled = true end
-
-                    local blur = FindFirstChild(lit, "Blur")
-                    if blur then blur.Enabled = true end
-
-                    local areacolor = FindFirstChild(lit, "areacolor")
-                    if areacolor then areacolor.Enabled = true end
-                end)
-                pcall(function()
-                    if cheat_client.restore_ambience then
-                        cheat_client:restore_ambience();
-                    end
-                    
-                    if cheat_client.restore_state then
-                        cheat_client:restore_state();
-                    end
-                    
-                    if cheat_client.legit_intent_cleanup then
-                        cheat_client.legit_intent_cleanup();
-                    end
-                    
-                    if cheat_client.proximity_cleanup then
-                        cheat_client.proximity_cleanup();
-                    end
-                    
-                    watched_guis = nil
-                end)
-                for _, v in pairs(Services.CoreGui:GetChildren()) do
-                    task.defer(function()
-                        if FindFirstChild(v, "Toggle") and FindFirstChild(v, 'SaveInstance') then
-                            v.Enabled = false
-                        end
-                        if v.Name == "Dex" then
-                            v:Destroy();
-                        end
-                    end)
-                end
-                pcall(function()
-                    if hidden_folder and hidden_folder.Parent then
-                        hidden_folder:Destroy()
-                    end
-
-                    for _,v in pairs(workspace.Thrown:GetChildren()) do
-                        if v.Name == "2holla" then
-                            v:Destroy()
-                        end
-                    end
-
-                    if cheat_client and cheat_client.bag_range_hitbox then
-                        cheat_client.bag_range_hitbox:Destroy()
-                        cheat_client.bag_range_hitbox = nil
-                    end
-                    if cheat_client and cheat_client.bag_range_hitbox_connection then
-                        cheat_client.bag_range_hitbox_connection:Disconnect()
-                        cheat_client.bag_range_hitbox_connection = nil
-                    end
-                end)
-                if cpu and cpu.status.active then
-                    setfpscap(240)
-                    cpu.services.ugs.MasterVolume = cpu.services.ms
-                    settings().Rendering.QualityLevel = cpu.services.ql
-                    cpu.services.rs:Set3dRenderingEnabled(true)
-
-                    table.clear(cpu)
-                    cpu = nil
                 end
             end)
+            table.clear(playerLabels)
+            for part, data in pairs(original_materials) do
+                if part and part.Parent then
+                    cleanup("material", function() part.Material = data.Material end)
+                    cleanup("reflectance", function() part.Reflectance = data.Reflectance end)
+                end
+            end
+            table.clear(original_materials)
+            for part, transparency in pairs(transparent_parts) do
+                if part and part.Parent then
+                    cleanup("transparency", function() part.Transparency = transparency end)
+                end
+            end
+            table.clear(transparent_parts)
 
-            if not success then
-
+            for _, name in ipairs({"bag_range_hitbox_connection"}) do disconnect(cheat_client[name]) end
+            for _, object in pairs({cheat_client.bag_range_hitbox, hidden_folder}) do
+                cleanup("owned UI", function() object:Destroy() end)
+            end
+            for _, container in pairs(shared.drawing_containers) do
+                for _, drawing in pairs(container) do
+                    cleanup("drawing", function() drawing:Remove() end)
+                end
+                table.clear(container)
+            end
+            -- Keep the container tables and unloading flag valid for retained external callbacks.
+            table.clear(shared.accents)
+            table.clear(mana_overlay)
+            table.clear(watched_guis)
+            if shared.library and shared.library.Unload and not shared.library.Unloaded then
+                lifecycle.unloading_library = true
+                cleanup("library", function() shared.library:Unload() end)
+                lifecycle.unloading_library = false
             end
 
-            pcall(function()
-                getgenv()[key] = nil
-                gcinfo()
-            end)
-
-            pcall(function()
-                mem:RemoveItem("dayfarming")
-                mem:RemoveItem("dayfarming_range")
-                mem:RemoveItem("day_goal_kick")
-                mem:RemoveItem("no_kick")
-                mem:RemoveItem("daygoal")
-
-                if not removeitem then
-                    mem:RemoveItem("botstarted")
-                    mem:RemoveItem("loaded_config")
+            if cpu and cpu.status and cpu.status.active then
+                cpu.status.active = false
+                if setfpscap then cleanup("FPS cap", setfpscap, lifecycle.original_fps_cap or 240) end
+                cleanup("volume", function() cpu.services.ugs.MasterVolume = cpu.services.ms end)
+                cleanup("quality", function() settings().Rendering.QualityLevel = cpu.services.ql end)
+                cleanup("rendering", function() cpu.services.rs:Set3dRenderingEnabled(true) end)
+            end
+            cleanup("camera subject", function()
+                local camera = ws.CurrentCamera
+                if not camera then return end
+                local humanoid = plr.Character and FindFirstChildOfClass(plr.Character, "Humanoid")
+                if humanoid then
+                    camera.CameraSubject = humanoid
+                    camera.CameraType = Enum.CameraType.Custom
                 end
             end)
-
-            pcall(function()
-                if original_materials then
-                    for v, data in pairs(original_materials) do
-                        if v and v.Parent then
-                            v.Material = data.Material
-                            v.Reflectance = data.Reflectance
-                        end
-                    end
-                    table.clear(original_materials)
-                    original_materials = nil
+            for _, name in ipairs({"dayfarming", "dayfarming_range", "day_goal_kick", "no_kick", "daygoal"}) do
+                cleanup("memory " .. name, function() mem:RemoveItem(name) end)
+            end
+            if not removeitem then
+                for _, name in ipairs({"botstarted", "loaded_config", "desert_mist_farming"}) do
+                    cleanup("memory " .. name, function() mem:RemoveItem(name) end)
                 end
-            end)
-
-            pcall(function()
-                if mana_overlay then
-                    table.clear(mana_overlay)
-                    mana_overlay = nil
-                end
-            end)
-
-            pcall(function()
-                if transparent_parts then
-                    table.clear(transparent_parts)
-                    transparent_parts = nil
-                end
-            end)
-
-            pcall(function()
-                if cheat_client then
-                    table.clear(cheat_client)
-                    cheat_client = nil
-                end
-            end)
+            end
+            lifecycle:Finish()
+            getgenv()[key] = nil
         end
+        unload_script = function(removeitem) utility:Unload(removeitem) end
+
     
         function utility:ChangeAccent(accentColor)
             shared.theme.accent = accentColor
@@ -3111,6 +3051,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         return loadstring(game:HttpGet(repo .. "Library.lua", true))()
     end)
 
+    if not success then error("Unable to load Library.lua: " .. tostring(library_func)) end
     if success then
         
         if type(library_func) == "function" then
@@ -3118,11 +3059,30 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         else
             library = library_func
         end
+        assert(type(library) == "table", "Library.lua returned an invalid library")
         shared.library = library
+        if library.SafeCallback then
+            local original_safe_callback = library.SafeCallback
+            library.SafeCallback = function(self, callback, ...)
+                if lifecycle.stopping then
+                    if lifecycle.unloading_library then return original_safe_callback(self, callback, ...) end
+                    return
+                end
+                return lifecycle:Run(original_safe_callback, self, callback, ...)
+            end
+            lifecycle:AddCleanup("library callbacks", function() library.SafeCallback = original_safe_callback end)
+        end
+        if library.OnUnload then library:OnUnload(function() utility:Unload() end) end
 
-        getgenv().Toggles = library.Toggles or {}
-        getgenv().Options = library.Options or {}
-        getgenv().Labels = library.Labels or {}
+        local environment = getgenv()
+        for _, name in ipairs({"Toggles", "Options", "Labels"}) do
+            local previous = environment[name]
+            local owned = library[name] or {}
+            environment[name] = owned
+            lifecycle:AddCleanup("global " .. name, function()
+                if environment[name] == owned then environment[name] = previous end
+            end)
+        end
 
         local SaveManager = loadstring(game:HttpGet(repo .. "SaveManager.lua"))()
         local ThemeManager = loadstring(game:HttpGet(repo .. "ThemeManager.lua"))()
@@ -4329,7 +4289,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         local should_update_text = (now - esp.last_text_update) >= esp.text_update_interval
 
                                         if should_update_text then
-                                            if Toggles and Toggles.PlayerName and Toggles.PlayerName.Value and Toggles and Toggles.PlayerObserve and Toggles.PlayerObserve.Value and show_details then
+                                            if Toggles and Toggles.PlayerName and Toggles.PlayerName.Value and Toggles.PlayerObserve and Toggles.PlayerObserve.Value and show_details then
                                                 local backpack = FindFirstChild(esp.player, "Backpack")
 
                                                 if backpack then
@@ -6291,10 +6251,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             if not original_days.hundred then
                 original_days = {
-                    thousand = has_thousand and {text = thousand.Char.Text, connection = nil} or nil,
-                    hundred = {text = hundred.Char.Text, connection = nil},
-                    ten = {text = ten.Char.Text, connection = nil},
-                    one = {text = one.Char.Text, connection = nil}
+                    thousand = has_thousand and {text = thousand.Char.Text, object = thousand.Char, connection = nil} or nil,
+                    hundred = {text = hundred.Char.Text, object = hundred.Char, connection = nil},
+                    ten = {text = ten.Char.Text, object = ten.Char, connection = nil},
+                    one = {text = one.Char.Text, object = one.Char, connection = nil}
                 }
             end
 
@@ -6632,7 +6592,18 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end;
             
     
-            function utility:craft(stationType, itemToCraft)
+            local crafting = false
+            local craft_mouse_override = false
+            local original_craft_mouse
+            local function restore_craft_mouse()
+                if craft_mouse_override and get_mouse_remote then
+                    get_mouse_remote.OnClientInvoke = original_craft_mouse
+                    craft_mouse_override = false
+                end
+            end
+            lifecycle:AddCleanup("craft mouse callback", restore_craft_mouse)
+
+            local function craft_at_station(stationType, itemToCraft)
                 if not plr.Character then return false end
                 if not (auto_pot_active or auto_craft_active) then return false end
 
@@ -6650,8 +6621,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
     
+                if not station or not items then return false end
                 if(stationType == 'Smithing') then
-                    rps.Requests.GetMouse.OnClientInvoke = function()
+                    if not get_mouse_remote then return false end
+                    local ok, callback = pcall(function()
+                        if getcallbackvalue then return getcallbackvalue(get_mouse_remote, "OnClientInvoke") end
+                        return get_mouse_remote.OnClientInvoke
+                    end)
+                    if ok then
+                        original_craft_mouse = callback
+                    else
+                        original_craft_mouse = function()
+                            return {Hit = mouse.Hit, Target = mouse.Target, UnitRay = mouse.UnitRay, X = mouse.X, Y = mouse.Y}
+                        end
+                    end
+                    craft_mouse_override = true
+                    lifecycle:RememberCallback(get_mouse_remote, "OnClientInvoke", default_mouse_state)
+                    get_mouse_remote.OnClientInvoke = function()
+                        if lifecycle.stopping then return default_mouse_state() end
                         return {
                             Hit = station.Material.CFrame,
                             Target = station.Material,
@@ -6688,17 +6675,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     until not items or not auto_craft_active;
                 end;
 
-                rps.Requests.GetMouse.OnClientInvoke = function()
-                    return {
-                        Hit = mouse.Hit,
-                        Target = mouse.Target,
-                        UnitRay = mouse.UnitRay,
-                        X = mouse.X,
-                        Y = mouse.Y
-                    }
-                end
-
                 return true
+            end
+
+            function utility:craft(stationType, itemToCraft)
+                if lifecycle.stopping or crafting then return false end
+                crafting = true
+                local result = table.pack(pcall(craft_at_station, stationType, itemToCraft))
+                lifecycle:Try("restore craft mouse callback", restore_craft_mouse)
+                crafting = false
+                if not result[1] then error(result[2], 0) end
+                return table.unpack(result, 2, result.n)
             end
         end
 
@@ -6878,7 +6865,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         if not shared.on_teleport_setup then
                             shared.on_teleport_setup = true
-                            shared.on_teleport_connection = plr.OnTeleport:Connect(function(State)
+                            shared.on_teleport_connection = utility:Connection(plr.OnTeleport, function(State)
                                 if teleport_debounce then return end
                                 teleport_debounce = true
 
@@ -7841,11 +7828,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if v ~= plr.Character then
                                     local z = FindFirstChildWhichIsA(v, "Humanoid")
                                     if z then
+                                        lifecycle:Remember(z, "HealthDisplayType")
                                         z.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
                                         if FindFirstChild(v, "MonsterInfo") then
+                                            lifecycle:Remember(z, "NameDisplayDistance")
                                             z.NameDisplayDistance = 0
                                         end
+                                        lifecycle:Remember(z, "HealthDisplayDistance")
                                         z.HealthDisplayDistance = 80
+                                        lifecycle:Remember(z, "DisplayDistanceType")
                                         z.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Subject
                                     end
                                 end
@@ -7855,11 +7846,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if ch ~= plr.Character then
                                     local z = ch:WaitForChild("Humanoid", 3)
                                     if z then
+                                        lifecycle:Remember(z, "HealthDisplayType")
                                         z.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
                                         if FindFirstChild(ch, "MonsterInfo") then
+                                            lifecycle:Remember(z, "NameDisplayDistance")
                                             z.NameDisplayDistance = 0
                                         end
+                                        lifecycle:Remember(z, "HealthDisplayDistance")
                                         z.HealthDisplayDistance = 80
+                                        lifecycle:Remember(z, "DisplayDistanceType")
                                         z.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Subject
                                     end
                                 end
@@ -7871,11 +7866,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if v ~= plr.Character then
                                     local z = FindFirstChildWhichIsA(v, "Humanoid")
                                     if z then
+                                        lifecycle:Remember(z, "HealthDisplayType")
                                         z.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
                                         if FindFirstChild(v, "MonsterInfo") then
+                                            lifecycle:Remember(z, "NameDisplayDistance")
                                             z.NameDisplayDistance = 0
                                         end
+                                        lifecycle:Remember(z, "HealthDisplayDistance")
                                         z.HealthDisplayDistance = 0
+                                        lifecycle:Remember(z, "DisplayDistanceType")
                                         z.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Subject
                                     end
                                 end
@@ -8421,6 +8420,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                             for i, v in next, plr.Character:GetDescendants() do
                                 if v:IsA("BasePart") then
+                                    lifecycle:Remember(v, "CanCollide")
                                     v.CanCollide = false
 
                                     if v ~= hrp then
@@ -8430,6 +8430,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
 
                             if huma then
+                                lifecycle:RememberHumanoidState(huma, 5)
                                 huma:SetStateEnabled(5, false)
                                 huma:ChangeState(3)
                             end
@@ -8460,14 +8461,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             for _, part in ipairs(plr.Character:GetDescendants()) do
                                 if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                                     if part.Name == "Head" or part.Name == "Torso" then
+                                        lifecycle:Remember(part, "CanCollide")
                                         part.CanCollide = true
                                     else
+                                        lifecycle:Remember(part, "CanCollide")
                                         part.CanCollide = false
                                     end
                                 end
                             end
 
                             if huma then
+                                lifecycle:RememberHumanoidState(huma, 5)
                                 huma:SetStateEnabled(5, true)
                                 huma:ChangeState(5)
                             end
@@ -8606,6 +8610,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local huma = FindFirstChildOfClass(plr.Character, "Humanoid")
                         if huma then
                             if state then
+                                lifecycle:RememberHumanoidState(huma, 5)
                                 huma:SetStateEnabled(5, false)
                                 huma:ChangeState(3)
                                 if cheat_client.start_better_flight then
@@ -8622,20 +8627,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 for _, part in ipairs(plr.Character:GetDescendants()) do
                                     if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                                         if part.Name == "Head" or part.Name == "Torso" then
+                                            lifecycle:Remember(part, "CanCollide")
                                             part.CanCollide = true
                                         else
+                                            lifecycle:Remember(part, "CanCollide")
                                             part.CanCollide = false
                                         end
                                     end
                                 end
 
                                 if huma then
+                                    lifecycle:RememberHumanoidState(huma, 5)
                                     huma:SetStateEnabled(5, true)
                                     huma:ChangeState(5)
                                 end
 
                                 local rootPart = FindFirstChild(character, "HumanoidRootPart")
                                 if rootPart then
+                                    lifecycle:Remember(rootPart, "Anchored")
                                     rootPart.Anchored = false
                                 end
                             end
@@ -9190,7 +9199,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             disc.Shape = Enum.PartType.Cylinder
                             local range = (Options and Options.bag_range and Options.bag_range.Value) or cheat_client.config.bag_range
                             disc.Size = Vector3.new(0.2, range * 2, range * 2)
+                            lifecycle:Remember(disc, "Anchored")
                             disc.Anchored = true
+                            lifecycle:Remember(disc, "CanCollide")
                             disc.CanCollide = false
                             disc.Material = Enum.Material.Neon
                             disc.Color = Color3.fromRGB(80, 200, 120)
@@ -9239,19 +9250,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Default = false,
                 Callback = function(state)
                     local camera = utility:GetCamera()
-                    if plr.character then
+                    if plr.Character then
                         local humanoid, torso = FindFirstChildOfClass(plr.Character, "Humanoid"), FindFirstChild(plr.Character, "Torso")
 
                         if humanoid and torso then
                             if state then
                                 camera.CameraType = Enum.CameraType.Scriptable
-                                StartCapture()
+                                if StartCapture then StartCapture() end
                                 if cheat_client.start_freecam_rendering then
                                     cheat_client.start_freecam_rendering()
                                 end
                             else
                                 camera.CameraType = Enum.CameraType.Custom
-                                StopCapture()
+                                if StopCapture then StopCapture() end
                                 camera.CameraSubject = humanoid
                                 if cheat_client.stop_freecam_rendering then
                                     cheat_client.stop_freecam_rendering()
@@ -9288,6 +9299,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local function killbrick(state, container)
                     for _, v in next, container:GetChildren() do
                         if v:IsA("BasePart") and FindFirstChild(v, "TouchInterest") and not (cheat_client.safe_bricks[v.Name] or cheat_client.must_touch[v.BrickColor.Number]) then
+                            lifecycle:Remember(v, "CanTouch")
                             v.CanTouch = not state
                         end
                     end
@@ -9326,6 +9338,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for _, obj in ipairs(monsters.Triggers:GetDescendants()) do
                             if obj and obj.ClassName == "Part" then
                                 pcall(function()
+                                    lifecycle:Remember(obj, "CanTouch")
                                     obj.CanTouch = not state
                                 end)
                             end
@@ -10845,7 +10858,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
 
                         clear_character_item(character, "Pants")
-                        new_pants = pants:Clone()
+                        local new_pants = pants:Clone()
                         new_pants.Parent = character
 
                         char_custom_enabled.pants = true
@@ -12349,6 +12362,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local COLLECTED_IDS_MAX_SIZE = 500
             local pending_pickup_ids = trinket_bot.pending_pickup_ids
             local active_tween_data = {tween = nil, connection = nil}
+            lifecycle:AddCleanup("trinket bot", function()
+                trinket_bot.path_running = false
+                if active_tween_data.tween then active_tween_data.tween:Cancel() end
+                for _, part in ipairs(trinket_bot.point_visualizations) do part:Destroy() end
+            end)
 
             local function mark_trinket_collected(trinket_id_value)
                 local count = 0
@@ -12433,20 +12451,24 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     for _, part in ipairs(character:GetDescendants()) do
                         if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                             if part.Name == "Head" or part.Name == "Torso" then
+                                lifecycle:Remember(part, "CanCollide")
                                 part.CanCollide = true
                             else
+                                lifecycle:Remember(part, "CanCollide")
                                 part.CanCollide = false
                             end
                         end
                     end
 
                     if huma then
+                        lifecycle:RememberHumanoidState(huma, 5)
                         huma:SetStateEnabled(5, true)
                         huma:ChangeState(5)
                     end
 
                     local rootPart = FindFirstChild(character, "HumanoidRootPart")
                     if rootPart then
+                        lifecycle:Remember(rootPart, "Anchored")
                         rootPart.Anchored = false
                     end
                 end
@@ -12457,7 +12479,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 sphere.Shape = Enum.PartType.Ball
                 sphere.Size = Vector3.new(2, 2, 2)
                 sphere.Position = position
+                lifecycle:Remember(sphere, "Anchored")
                 sphere.Anchored = true
+                lifecycle:Remember(sphere, "CanCollide")
                 sphere.CanCollide = false
                 sphere.Material = Enum.Material.Neon
 
@@ -12810,6 +12834,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if character then
                     local humanoid = FindFirstChildOfClass(character, "Humanoid")
                     if humanoid then
+                        lifecycle:RememberHumanoidState(humanoid, 5)
                         humanoid:SetStateEnabled(5, false)
                         humanoid:ChangeState(3)
                     end
@@ -12830,6 +12855,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for _, v in pairs(plr.Character:GetDescendants()) do
                             if v:IsA("BasePart") then
                                 v.Velocity = Vector3.new()
+                                lifecycle:Remember(v, "CanCollide")
                                 v.CanCollide = false
                             end
                         end
@@ -12841,7 +12867,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 local time = distance / speed
 
                 local tweenInfo = TweenInfo.new(time, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut)
-                local tween = ts:Create(root, tweenInfo, {CFrame = CFrame.new(targetPosition)})
+                local tween = lifecycle:CreateTween(ts, root, tweenInfo, {CFrame = CFrame.new(targetPosition)})
 
                 active_tween_data.tween = tween
                 active_tween_data.connection = connection
@@ -12872,6 +12898,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if character then
                     local humanoid = FindFirstChildOfClass(character, "Humanoid")
                     if humanoid then
+                        lifecycle:RememberHumanoidState(humanoid, 5)
                         humanoid:SetStateEnabled(5, true)
                         humanoid:ChangeState(5)
                     end
@@ -12880,8 +12907,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for _, part in ipairs(character:GetDescendants()) do
                             if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                                 if part.Name == "Head" or part.Name == "Torso" then
+                                    lifecycle:Remember(part, "CanCollide")
                                     part.CanCollide = true
                                 else
+                                    lifecycle:Remember(part, "CanCollide")
                                     part.CanCollide = false
                                 end
                             end
@@ -12946,7 +12975,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             gate_counter = gate_counter + 1
                             if gate_counter % 2 == 0 then
                                 task.spawn(function()
-                                    if character:FindFirstChild("Phoenix Down") or character:FindFirstChild("Idol of War") or currently_dropping then
+                                    if character:FindFirstChild("Phoenix Down") or character:FindFirstChild("Idol of War") or cheat_client.currently_dropping then
                                         return
                                     end
                                     temporary_equip_active = true
@@ -12971,9 +13000,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return false
                 end
 
-                if currently_dropping then
+                if cheat_client.currently_dropping then
                     library:Notify("Waiting for item drop to complete before gating...")
-                    while currently_dropping and trinket_bot.path_running do
+                    while cheat_client.currently_dropping and trinket_bot.path_running do
                         task.wait(0.1)
                     end
 
@@ -13012,6 +13041,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if plr.Character then
                     local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
                     if humanoid then
+                        lifecycle:RememberHumanoidState(humanoid, 5)
                         humanoid:SetStateEnabled(5, true)
                         humanoid:ChangeState(5)
                     end
@@ -13306,10 +13336,6 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local should_pickup = true
 
                         if ignore_ice and trinketName == "Ice Essence" then
-                            should_pickup = false
-                        elseif ignore_phoenix_down and trinketName == "Phoenix Down" then
-                            should_pickup = false
-                        elseif ignore_azael_horn and trinketName == "Azael Horn" then
                             should_pickup = false
                         elseif trinketName == "Scroll" then
                             should_pickup = not ignore_scrolls
@@ -13647,7 +13673,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                         }
 
-                        if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                        if cheat_client and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                             task.spawn(function()
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
@@ -13662,7 +13688,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 if not shared.on_teleport_setup then
                     shared.on_teleport_setup = true
-                    shared.on_teleport_connection = plr.OnTeleport:Connect(function(State)
+                    shared.on_teleport_connection = utility:Connection(plr.OnTeleport, function(State)
                         if teleport_debounce then
                             return
                         end
@@ -14027,7 +14053,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return false
             end
 
-            local currently_dropping = false
+            cheat_client.currently_dropping = false
             local droppedTools = {}
 
             local whitelist_23_file = "rabbihub/whitelist_23.json"
@@ -14300,7 +14326,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.test_mode = test_mode
 
                 droppedTools = {}
-                currently_dropping = false
+                cheat_client.currently_dropping = false
 
                 local serverhop_count = 0
                 if mem:HasItem("serverhop_count") then
@@ -14459,6 +14485,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 if character then
                     local humanoid = FindFirstChildOfClass(character, "Humanoid")
                     if humanoid then
+                        lifecycle:RememberHumanoidState(humanoid, 5)
                         humanoid:SetStateEnabled(5, false)
                         humanoid:ChangeState(3)
 
@@ -15076,7 +15103,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 auto_trinket_connection = track_connection("auto_trinket", utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function()
                     if not plr.Character or shared.is_unloading or not trinket_bot.path_running then return end
 
-                    if currently_dropping then return end
+                    if cheat_client.currently_dropping then return end
 
                     if Toggles.ReequipGateInLoop and Toggles.ReequipGateInLoop.Value and not temporary_equip_active then
                         local gate_in_backpack = FindFirstChild(plr.Backpack, "Gate")
@@ -15168,6 +15195,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                             if should_disable and v.CanTouch then
                                 affected_bricks[v] = true
+                                lifecycle:Remember(v, "CanTouch")
                                 v.CanTouch = false
                             end
                         end
@@ -15179,6 +15207,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     for _, obj in ipairs(monsters.Triggers:GetDescendants()) do
                         if obj and obj.ClassName == "Part" then
                             pcall(function()
+                                lifecycle:Remember(obj, "CanTouch")
                                 obj.CanTouch = false
                             end)
                         end
@@ -15441,6 +15470,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
                             local hrp = plr.Character.HumanoidRootPart
                             if humanoid then
+                                lifecycle:RememberHumanoidState(humanoid, 5)
                                 humanoid:SetStateEnabled(5, true)
                                 humanoid:ChangeState(5)
 
@@ -15486,6 +15516,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         elseif plr.Character then
                             local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
                             if humanoid then
+                                lifecycle:RememberHumanoidState(humanoid, 5)
                                 humanoid:SetStateEnabled(5, true)
                                 humanoid:ChangeState(5)
                             end
@@ -15694,6 +15725,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     if plr.Character then
                                         local hum = FindFirstChildOfClass(plr.Character, "Humanoid")
                                         if hum then
+                                            lifecycle:RememberHumanoidState(hum, 5)
                                             hum:SetStateEnabled(5, true)
                                             hum:ChangeState(5)
                                         end
@@ -15820,6 +15852,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                 if plr.Character then
                                                     local hum = FindFirstChildOfClass(plr.Character, "Humanoid")
                                                     if hum then
+                                                        lifecycle:RememberHumanoidState(hum, 5)
                                                         hum:SetStateEnabled(5, true)
                                                         hum:ChangeState(5)
                                                     end
@@ -15944,6 +15977,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                                     if plr.Character then
                                                         local hum = FindFirstChildOfClass(plr.Character, "Humanoid")
                                                         if hum then
+                                                            lifecycle:RememberHumanoidState(hum, 5)
                                                             hum:SetStateEnabled(5, true)
                                                             hum:ChangeState(5)
                                                         end
@@ -16125,7 +16159,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     end
                                 else
                                     library:Notify("No clear gate point but staying in server - continuing with path")
-                                    if emergency_stabilization_platform then pcall(function() emergency_stabilization_platform:Destroy() end) emergency_stabilization_platform = nil end
+                                    -- Removed cleanup for the platform that was never created.
                                     emergency_gate_in_progress = false
                                 end
                             end
@@ -16384,7 +16418,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                                             task.wait(0.5)
 
-                                            if not retry_platform then
+                                            do -- Retry movement does not depend on an undeclared platform.
                                                 character = plr.Character
 
                                                 if character and FindFirstChild(character, "HumanoidRootPart") then
@@ -16465,6 +16499,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if plr.Character then
                                     local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
                                     if humanoid then
+                                        lifecycle:RememberHumanoidState(humanoid, 5)
                                         humanoid:SetStateEnabled(5, true)
                                         humanoid:ChangeState(5)
                                     end
@@ -16472,8 +16507,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     for _, part in ipairs(plr.Character:GetDescendants()) do
                                         if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                                             if part.Name == "Head" or part.Name == "Torso" then
+                                                lifecycle:Remember(part, "CanCollide")
                                                 part.CanCollide = true
                                             else
+                                                lifecycle:Remember(part, "CanCollide")
                                                 part.CanCollide = false
                                             end
                                         end
@@ -16681,6 +16718,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                     if plr.Character then
                                         local hum = FindFirstChildOfClass(plr.Character, "Humanoid")
                                         if hum then
+                                            lifecycle:RememberHumanoidState(hum, 5)
                                             hum:SetStateEnabled(5, true)
                                             hum:ChangeState(5)
                                         end
@@ -16797,7 +16835,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                         end
                                     end
 
-                                    if emergency_stabilization_platform then pcall(function() emergency_stabilization_platform:Destroy() end) emergency_stabilization_platform = nil end
+                                    -- Removed cleanup for the platform that was never created.
                                     emergency_gate_in_progress = false
                                     trinket_bot.path_running = false
                                     TrinketBotServerhop(string.format("Escaped %s via path traversal (no gates)", player_name))
@@ -16805,7 +16843,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 else
                                     utility:better_log(string.format("No clear gate point available - serverhopping to escape %s", player_name))
                                     library:Notify(string.format("No clear gate point available - serverhopping to escape %s", player_name))
-                                    if emergency_stabilization_platform then pcall(function() emergency_stabilization_platform:Destroy() end) emergency_stabilization_platform = nil end
+                                    -- Removed cleanup for the platform that was never created.
                                     emergency_gate_in_progress = false
                                     trinket_bot.path_running = false
                                     TrinketBotServerhop(string.format("No gate available to escape %s", player_name))
@@ -16925,6 +16963,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 if huma then
                                     local isInAir = huma.FloorMaterial == Enum.Material.Air
                                     if not isInAir then
+                                        lifecycle:RememberHumanoidState(huma, 5)
                                         huma:SetStateEnabled(5, true)
                                         huma:ChangeState(5)
                                         disabled_noclip = true
@@ -17033,6 +17072,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if disabled_noclip and plr.Character then
                                 local huma = FindFirstChildOfClass(plr.Character, "Humanoid")
                                 if huma then
+                                    lifecycle:RememberHumanoidState(huma, 5)
                                     huma:SetStateEnabled(5, false)
                                     huma:ChangeState(3)
                                 end
@@ -17220,6 +17260,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                 for brick, _ in pairs(affected_bricks) do
                     if brick and brick.Parent then
+                        lifecycle:Remember(brick, "CanTouch")
                         brick.CanTouch = true
                     end
                 end
@@ -17348,7 +17389,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                         }
 
-                        if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                        if cheat_client and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                             task.spawn(function()
                                 pcall(function()
                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
@@ -17500,7 +17541,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                     }
 
-                    if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                    if cheat_client and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                         task.spawn(function()
                             pcall(function()
                                 HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
@@ -18103,6 +18144,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end)
             end
 
+            cheat_client.save_current_path_settings = save_current_path_settings
+
             local function load_path_by_name(path_name)
                 if not path_name or path_name == "" then
                     library:Notify("Please select a path!")
@@ -18208,7 +18251,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if needs_save then
                             task.spawn(function()
                                 task.wait(0.1)
-                                save_current_path_settings()
+                                if cheat_client.save_current_path_settings then cheat_client.save_current_path_settings() end
                             end)
                         end
                         return true
@@ -18224,6 +18267,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
                 return load_ok and (success and save_data and save_data.points and #save_data.points > 0)
             end
+            cheat_client.load_path_by_name = load_path_by_name
 
             task.spawn(function()
                 if mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
@@ -19464,7 +19508,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                                         }
 
-                                        if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                                        if cheat_client and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                                             task.spawn(function()
                                                 pcall(function()
                                                     HXD_SEND_WEBHOOK(cheat_client.config.webhook, {
@@ -19540,18 +19584,18 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
 
-                while currently_dropping do
+                while cheat_client.currently_dropping do
                     task.wait(0.1)
                 end
-                currently_dropping = true
+                cheat_client.currently_dropping = true
 
                 if not (Options.AutoDropItems and Options.AutoDropItems.Value) then
-                    currently_dropping = false
+                    cheat_client.currently_dropping = false
                     return
                 end
 
                 if droppedTools[item.Name] then
-                    currently_dropping = false
+                    cheat_client.currently_dropping = false
                     return
                 end
                 local selected_items = Options.AutoDropItems.Value
@@ -19565,7 +19609,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 if not should_drop then
-                    currently_dropping = false
+                    cheat_client.currently_dropping = false
                     return
                 end
 
@@ -19585,7 +19629,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if not equip_success then
 
                             droppedTools[item.Name] = nil
-                            currently_dropping = false
+                            cheat_client.currently_dropping = false
                             return
                         end
 
@@ -19598,7 +19642,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         if item.Parent ~= character then
 
                             droppedTools[item.Name] = nil
-                            currently_dropping = false
+                            cheat_client.currently_dropping = false
                             return
                         end
 
@@ -19623,7 +19667,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if not item or not item.Parent or (item.Parent ~= character and item.Parent ~= plr.Backpack) then
                                 library:Notify(string.format("Used %s successfully!", item.Name))
                                 droppedTools[item.Name] = nil
-                                currently_dropping = false
+                                cheat_client.currently_dropping = false
                                 return
                             end
 
@@ -19651,7 +19695,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         task.wait(0.3)
                     end
 
-                    currently_dropping = false
+                    cheat_client.currently_dropping = false
                 end
             end
 
@@ -20987,8 +21031,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
 
                             if toggle.TextLabel then
-                                toggle.TextLabel.TextColor3 = Library.Scheme.FontColor
-                                Library.Registry[toggle.TextLabel].TextColor3 = "FontColor"
+                                toggle.TextLabel.TextColor3 = library.Scheme.FontColor
+                                if library.Registry[toggle.TextLabel] then library.Registry[toggle.TextLabel].TextColor3 = "FontColor" end
                             end
                         else
                             if toggle.Value then
@@ -20998,8 +21042,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             toggle:SetDisabled(true)
 
                             if toggle.TextLabel then
-                                toggle.TextLabel.TextColor3 = Library.Scheme.Red
-                                Library.Registry[toggle.TextLabel].TextColor3 = "Red"
+                                toggle.TextLabel.TextColor3 = library.Scheme.Red
+                                if library.Registry[toggle.TextLabel] then library.Registry[toggle.TextLabel].TextColor3 = "Red" end
                             end
                         end
                     end
@@ -22224,7 +22268,7 @@ end
                                 if Options.SavedPaths then
                                     pcall(function() Options.SavedPaths:SetValue(last_path) end)
                                 else
-                                    pcall(load_path_by_name, last_path)
+                                    pcall(cheat_client.load_path_by_name, last_path)
                                 end
                             end
                         end
@@ -22248,7 +22292,7 @@ end
                         local toggle = Toggles[toggle_name]
                         if toggle then
                             toggle:OnChanged(function()
-                                save_current_path_settings()
+                                if cheat_client.save_current_path_settings then cheat_client.save_current_path_settings() end
                             end)
                         end
                     end
@@ -22257,7 +22301,7 @@ end
                         local option = Options[option_name]
                         if option then
                             option:OnChanged(function()
-                                save_current_path_settings()
+                                if cheat_client.save_current_path_settings then cheat_client.save_current_path_settings() end
                             end)
                         end
                     end
@@ -22364,14 +22408,14 @@ end
             end
         end
 
-        if isfile(model_path) then
-            local asset = getcustomasset(model_path)
+        if isfile(model_path) and getcustomasset then
             local success, model = pcall(function()
-                return game:GetObjects(asset)[1]
+                return game:GetObjects(getcustomasset(model_path))[1]
             end)
 
             if success and model then
                 legit_intent_gui = model
+                lifecycle.instances[model] = true
             else
 
             end
@@ -22393,6 +22437,7 @@ end
             end
             
             local eye = legit_intent_gui:Clone()
+            lifecycle.instances[eye] = true
             local display = FindFirstChild(eye, "Tool")
             if not display then 
                 return 
@@ -22438,9 +22483,9 @@ end
                     local distance = (camera_pos - hrp.Position).Magnitude
 
                     if distance < range then
-                        ts:Create(display, TweenInfo.new(0.25), {TextTransparency = 0}):Play()
+                        lifecycle:CreateTween(ts, display, TweenInfo.new(0.25), {TextTransparency = 0}):Play()
                     else
-                        ts:Create(display, TweenInfo.new(0.25), {TextTransparency = 1}):Play()
+                        lifecycle:CreateTween(ts, display, TweenInfo.new(0.25), {TextTransparency = 1}):Play()
                     end
                 else
                     eye:Destroy()
@@ -22453,7 +22498,7 @@ end
         local function remove_watched_gui(character)
             local watched = watched_guis[character]
             if watched and watched.gui then
-                ts:Create(watched.display, TweenInfo.new(0.25), {TextTransparency = 1}):Play()
+                lifecycle:CreateTween(ts, watched.display, TweenInfo.new(0.25), {TextTransparency = 1}):Play()
                 task.wait(0.25)
                 watched.gui:Destroy()
                 watched_guis[character] = nil
@@ -22664,6 +22709,7 @@ end
 
         do
             old_hastag = hookfunction(cs.HasTag, function(self, object, tag)
+                if lifecycle.stopping then return old_hastag(self, object, tag) end
                 if not checkcaller() then
                     if object == plr.Character then
                         if tag == "Acrobat" and shared and Toggles and Toggles.spoof_acrobat and Toggles.spoof_acrobat.Value then
@@ -23020,6 +23066,7 @@ end
 
             if game.PlaceId == 5208655184 or game.PlaceId == 3541987450 or game.PlaceId == 109732117428502 or game.PlaceId == 14341521240 then
                 old_remote = hookfunction(Instance.new("RemoteEvent").FireServer, function(Event, ...)
+                    if lifecycle.stopping then return old_remote(Event, ...) end
                 	local args = {...}
 
                     local char = plr.Character
@@ -23051,7 +23098,7 @@ end
 
 
                     if shared and remotes_folder and Event.Parent == remotes_folder then
-                        local no_fall_enabled = (Toggles and Toggles.no_fall and Toggles.no_fall.Value) or (trinket_bot and trinket_bot.path_running)
+                        local no_fall_enabled = (Toggles and Toggles.no_fall and Toggles.no_fall.Value) or (cheat_client.trinket_bot and cheat_client.trinket_bot.path_running)
                         if no_fall_enabled and #args == 2 and typeof(args[2]) == "table" then
                             return
                         end
@@ -23227,20 +23274,24 @@ end
                     for _, part in ipairs(plr.Character:GetDescendants()) do
                         if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                             if part.Name == "Head" or part.Name == "Torso" then
+                                lifecycle:Remember(part, "CanCollide")
                                 part.CanCollide = true
                             else
+                                lifecycle:Remember(part, "CanCollide")
                                 part.CanCollide = false
                             end
                         end
                     end
 
                     if huma then
+                        lifecycle:RememberHumanoidState(huma, 5)
                         huma:SetStateEnabled(5, true)
                         huma:ChangeState(5)
                     end
 
                     local rootPart = FindFirstChild(character, "HumanoidRootPart")
                     if rootPart then
+                        lifecycle:Remember(rootPart, "Anchored")
                         rootPart.Anchored = false
                     end
 
@@ -23268,6 +23319,7 @@ end
                                     
                                     for i,v in next, plr.Character:GetDescendants() do
                                         if v:IsA("BasePart") then
+                                            lifecycle:Remember(v, "CanCollide")
                                             v.CanCollide = false
                                             
                                             if v ~= rootPart then
@@ -23277,6 +23329,7 @@ end
                                     end
                                     
                                     if not was_noclip_enabled and huma then
+                                        lifecycle:RememberHumanoidState(huma, 5)
                                         huma:SetStateEnabled(5, false)
                                         huma:ChangeState(3)
                                     end
@@ -23295,14 +23348,17 @@ end
                                     for _, part in ipairs(plr.Character:GetDescendants()) do
                                         if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                                             if part.Name == "Head" or part.Name == "Torso" then
+                                                lifecycle:Remember(part, "CanCollide")
                                                 part.CanCollide = true
                                             else
+                                                lifecycle:Remember(part, "CanCollide")
                                                 part.CanCollide = false
                                             end
                                         end
                                     end
                                     
                                     if huma then
+                                        lifecycle:RememberHumanoidState(huma, 5)
                                         huma:SetStateEnabled(5, true)
                                         huma:ChangeState(5)
                                     end
@@ -23352,6 +23408,7 @@ end
                                     end
                                     
                                     local shouldAnchor = eVector == Vector3.new() or rootPart.AssemblyLinearVelocity.Magnitude < 1
+                                    lifecycle:Remember(rootPart, "Anchored")
                                     rootPart.Anchored = shouldAnchor
                                 end
                             elseif was_noclip_enabled then
@@ -23360,14 +23417,17 @@ end
                                 for _, part in ipairs(plr.Character:GetDescendants()) do
                                     if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                                         if part.Name == "Head" or part.Name == "Torso" then
+                                            lifecycle:Remember(part, "CanCollide")
                                             part.CanCollide = true
                                         else
+                                            lifecycle:Remember(part, "CanCollide")
                                             part.CanCollide = false
                                         end
                                     end
                                 end
                                 
                                 if huma then
+                                    lifecycle:RememberHumanoidState(huma, 5)
                                     huma:SetStateEnabled(5, true)
                                     huma:ChangeState(5)
                                 end
@@ -23864,7 +23924,8 @@ end
             else
                 local x
                 x = hookmetamethod(game, "__index", LPH_NO_VIRTUALIZE(function(self,key)
-                    if self == plr and key == "Name" and not checkcaller() and shared and Toggles and Toggles.auto_bard and Toggles.auto_bard.Value and getcallingscript().Parent and getcallingscript().Parent.Name == "BardGui" then
+                    if lifecycle.stopping then return x(self, key) end
+                    if self == plr and key == "Name" and not checkcaller() and shared and Toggles and Toggles.auto_bard and Toggles.auto_bard.Value and getcallingscript() and getcallingscript().Parent and getcallingscript().Parent.Name == "BardGui" then
                         return "Melon_Sensei"
                     end
                     return x(self,key)
@@ -24085,7 +24146,7 @@ end
                 tool_dict[toolName] = true
             end
             
-            local function hasListedTools(player)
+            hasListedTools = function(player)
                 if not player then return false end
                 
                 if FindFirstChild(player, "Backpack") then
@@ -24107,7 +24168,7 @@ end
                 return false
             end
             
-            local function hasObserveTool(player)
+            hasObserveTool = function(player)
                 if not player then return false end
                 
                 if FindFirstChild(player, "Backpack") and FindFirstChild(player.Backpack, "Observe") then
@@ -24227,7 +24288,7 @@ end
                 end
             end
             
-            local player_monitor_connections = {}
+            -- player_monitor_connections is shared with unload cleanup.
             local function updatePlayerLabels(player)
                 if playerLabels then
                     local snapshot = {}
@@ -24476,6 +24537,7 @@ end
         end
     
         do
+            local InitSpectator
             local THIS_SCRIPT = script
             local Spectating
 
@@ -24493,6 +24555,7 @@ end
 
             if not FindFirstChild(plr.PlayerGui, LPH_ENCSTR("LeaderboardGui")) then
                 local newLB = FindFirstChild(sui, LPH_ENCSTR("LeaderboardGui")):Clone()
+                lifecycle.instances[newLB] = true
                 newLB.Parent = plr.PlayerGui
                 newLB.ResetOnSpawn = true
 
@@ -24506,6 +24569,7 @@ end
                         local leaderboardSrc = FindFirstChild(sui, LPH_ENCSTR('LeaderboardGui'))
                         if leaderboardSrc then
                             existingLB = leaderboardSrc:Clone()
+                            lifecycle.instances[existingLB] = true
                             existingLB.Parent = plr.PlayerGui
                             existingLB.ResetOnSpawn = true
                         end
@@ -24545,6 +24609,7 @@ end
                                 local leaderboardSrc = FindFirstChild(sui, LPH_ENCSTR('LeaderboardGui'))
                                 if leaderboardSrc then
                                     local tempGui = leaderboardSrc:Clone()
+                                    lifecycle.instances[tempGui] = true
                                     tempGui.Parent = gui
                                     return tempGui
                                 end
@@ -24576,6 +24641,7 @@ end
                                 local leaderboardSrc = FindFirstChild(sui, LPH_ENCSTR('LeaderboardGui'))
                                 if leaderboardSrc then
                                     existingLB = leaderboardSrc:Clone()
+                            lifecycle.instances[existingLB] = true
                                     existingLB.Parent = gui
                                 end
                             end
@@ -24587,29 +24653,14 @@ end
                 end
             end)
 
-            local Find = LPH_NO_VIRTUALIZE(function(Upvalues, Function)
-                local Constants = {}
-                if typeof(Upvalues) == "function" then
-                    Constants = debug.getconstants(Upvalues)
-                    Upvalues = debug.getupvalues(Upvalues)
+            local Find = LPH_NO_VIRTUALIZE(function(upvalues, predicate)
+                if type(upvalues) == "function" then upvalues = debug.getupvalues(upvalues) end
+                if type(upvalues) ~= "table" then return nil end
+                for index, value in pairs(upvalues) do
+                    local ok, matches = pcall(predicate, value)
+                    if ok and matches then return value, index end
                 end
-
-                for i, v in pairs(Upvalues) do
-                    local Env = getfenv(Function)
-                    Env.Constants = Constants
-                    setfenv(Function, Env)
-                    local S, E = pcall(Function, v)
-
-                    if S and E then
-                        local Env = getfenv(2)
-                        Env.Value = v
-                        Env.Index = i
-                        setfenv(2, Env)
-                        return v
-                    end
-                end
-
-                return false
+                return nil
             end)
 
             local function InTable(Table, Value)
@@ -25242,6 +25293,7 @@ end
             end
 
             local function NameRightClick(Player, Label)
+                if lifecycle.stopping then return Label end
                 if not shared.NameRightClick then
                     shared.NameRightClick = NameRightClick
                 end
@@ -25299,7 +25351,8 @@ end
                 return Label
             end
 
-            function InitSpectator()
+            InitSpectator = function()
+                if lifecycle.stopping then return end
                 pcall(LPH_NO_VIRTUALIZE(function()
                     local leaderboardGui = WaitForChild(plr.PlayerGui, "LeaderboardGui", 50)
                     if not leaderboardGui then
@@ -25307,7 +25360,7 @@ end
                         return
                     end
                     WaitForChild(leaderboardGui, "LeaderboardClient", 10)
-                    wait()
+                    task.wait()
 
                     pcall(function() collectgarbage("collect") end)
                     task.wait(0.1)
@@ -25317,17 +25370,19 @@ end
                             local ups = debug.getupvalues(v)
                             local scr = getfenv(v).script
 
-                            if Find(ups, function(x)
+                            local factory, factory_index = Find(ups, function(x)
                                 return scr and scr.Name == "LeaderboardClient" and typeof(x) == "function" and
                                     InTable(debug.getconstants(x), "HouseRank")
-                            end) then
+                            end)
+                            if factory and factory_index then
                                 local Labels = {}
 
-                                if Find(Value, function(x)
+                                local labels = Find(factory, function(x)
                                     return typeof(x) == "table" and x[plr]
-                                end) then
-                                    Labels = Value
-                                    for i, v in pairs(Value) do
+                                end)
+                                if labels then
+                                    Labels = labels
+                                    for i, v in pairs(labels) do
                                         pcall(NameRightClick, i, v)
                                     end
                                 end
@@ -25340,7 +25395,7 @@ end
                                     shared.SPROC = {}
                                 end
 
-                                local Index = (shared.SPROC[v] and shared.SPROC[v].Index) or Index
+                                local Index = (shared.SPROC[v] and shared.SPROC[v].Index) or factory_index
                                 local Original = (shared.SPROC[v] and shared.SPROC[v].Function) or debug.getupvalues(v)[Index]
                                 
                                 if shared.SPROC then
@@ -25352,7 +25407,7 @@ end
                                     local DummyConstant = "HouseRank"
                                     local DummyTable = Labels
 
-                                    if Player and Label and shared.labelsNeedingButtons then
+                                    if not lifecycle.stopping and Player and Label and shared.labelsNeedingButtons then
                                         if #shared.labelsNeedingButtons < 100 then
                                             table.insert(shared.labelsNeedingButtons, {label = Label, player = Player})
                                         end
@@ -26347,6 +26402,7 @@ end
 
                 if child.Name == 'OrderBubble' then
                     task.defer(function()
+                        lifecycle:Remember(child, "CanTouch")
                         child.CanTouch = false
                     end)
                 end
@@ -26596,7 +26652,7 @@ end
                                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
                             }
 
-                            if cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
+                            if cheat_client and cheat_client.config.webhook and cheat_client.config.webhook ~= "" then
                                 task.spawn(function()
                                     pcall(function()
                                         local content_msg = picked_up_by_us and "✅ Artifact was picked up!" or "🔴 Artifact was NOT picked up."
@@ -27826,7 +27882,9 @@ end
                     end
 
                     if game.PlaceId ~= 14341521240 and get_mouse_remote then
+                        lifecycle:RememberCallback(get_mouse_remote, "OnClientInvoke", default_mouse_state)
                         get_mouse_remote.OnClientInvoke = function()
+                            if lifecycle.stopping then return default_mouse_state() end
                             if not is_valid_tool_equipped() then
                                 return {
                                     Hit = mouse.Hit,
@@ -27976,6 +28034,7 @@ end
                     for _, v in ipairs(cached_parts) do
                         if v and v.Parent then
                             v.Velocity = Vector3.new()
+                            lifecycle:Remember(v, "CanCollide")
                             v.CanCollide = false
                         end
                     end
@@ -28064,6 +28123,7 @@ end
                     for i, v in next, character:GetDescendants() do
                         if v:IsA("BasePart") then
                             v.Velocity = Vector3.new()
+                            lifecycle:Remember(v, "CanCollide")
                             v.CanCollide = false
                             if v ~= rootPart then
                                 v.RotVelocity = Vector3.new(0, 0, 0)
@@ -28072,6 +28132,7 @@ end
                     end
 
                     if not was_noclip_enabled_fling and huma then
+                        lifecycle:RememberHumanoidState(huma, 5)
                         huma:SetStateEnabled(5, false)
                         huma:ChangeState(3)
                     end
@@ -28114,6 +28175,7 @@ end
                         end
 
                         local shouldAnchor = eVector == Vector3.new() or rootPart.AssemblyLinearVelocity.Magnitude < 1
+                        lifecycle:Remember(rootPart, "Anchored")
                         rootPart.Anchored = shouldAnchor
                     end
                 end))
@@ -28178,6 +28240,7 @@ end
                     local rootPart = FindFirstChild(character, "HumanoidRootPart")
 
                     if rootPart then
+                        lifecycle:Remember(rootPart, "Anchored")
                         rootPart.Anchored = false
                     end
 
@@ -28189,8 +28252,10 @@ end
 
                             if part.Name ~= "HumanoidRootPart" then
                                 if part.Name == "Head" or part.Name == "Torso" then
+                                    lifecycle:Remember(part, "CanCollide")
                                     part.CanCollide = true
                                 else
+                                    lifecycle:Remember(part, "CanCollide")
                                     part.CanCollide = false
                                 end
                             end
@@ -28198,6 +28263,7 @@ end
                     end
 
                     if huma then
+                        lifecycle:RememberHumanoidState(huma, 5)
                         huma:SetStateEnabled(5, true)
                         huma:ChangeState(Enum.HumanoidStateType.Physics)
                         task.wait()
@@ -28285,7 +28351,7 @@ end
                 return Enum.ContextActionResult.Sink
             end
     
-            function StartCapture()
+            StartCapture = function()
     		    cas:BindActionAtPriority("FreecamKeyboard", Keypress, false, Enum.ContextActionPriority.High.Value,
         			Enum.KeyCode.W, Enum.KeyCode.U,
         			Enum.KeyCode.A, Enum.KeyCode.H,
@@ -28303,7 +28369,7 @@ end
     			end
             end
     	
-    		function StopCapture()
+            StopCapture = function()
     			navSpeed = 1
     			Zero(keyboard)
     			cas:UnbindAction("FreecamKeyboard")
@@ -28381,6 +28447,10 @@ end
 
             cheat_client.start_freecam_rendering = start_freecam_rendering
             cheat_client.stop_freecam_rendering = stop_freecam_rendering
+            if Toggles and Toggles.freecam and Toggles.freecam.Value and plr.Character then
+                StartCapture()
+                start_freecam_rendering()
+            end
         end
 
 
@@ -28812,6 +28882,7 @@ end
                         if desert_mist_collision_states[object] == nil then
                             desert_mist_collision_states[object] = object.CanCollide
                         end
+                        lifecycle:Remember(object, "CanCollide")
                         object.CanCollide = false
                     end
                 end
@@ -28823,6 +28894,7 @@ end
                     for part, can_collide in pairs(desert_mist_collision_states) do
                         if part and part.Parent and part:IsA("BasePart") then
                             pcall(function()
+                                lifecycle:Remember(part, "CanCollide")
                                 part.CanCollide = can_collide
                             end)
                         end
@@ -28953,6 +29025,7 @@ end
                 end
 
                 pcall(function()
+                    lifecycle:RememberHumanoidState(humanoid, Enum.HumanoidStateType.Freefall)
                     humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
                     humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
                 end)
@@ -28960,6 +29033,7 @@ end
                 local function restore_humanoid_state()
                     pcall(function()
                         if humanoid and humanoid.Parent then
+                            lifecycle:RememberHumanoidState(humanoid, Enum.HumanoidStateType.Freefall)
                             humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
                             humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
                         end
@@ -28968,7 +29042,7 @@ end
 
                 local rotation_only = root.CFrame - root.Position
                 local duration = math.max(distance / DESERT_MIST_TWEEN_SPEED, 0.05)
-                local tween = ts:Create(
+                local tween = lifecycle:CreateTween(ts,
                     root,
                     TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
                     {CFrame = CFrame.new(position) * rotation_only}
@@ -29390,6 +29464,7 @@ end
             end
 
             cheat_client.desert_mist = {
+                cleanup = desert_mist_cleanup,
                 toggle = function(value)
                     if value then
                         if not desert_mist_farm_running then
@@ -29444,7 +29519,16 @@ end
         return debug.traceback(tostring(err), 2)
     end)
 
+    lifecycle.initialization_thread = nil
     if not success then
+        if unload_script then
+            lifecycle:Try("cleanup after initialization failure", unload_script, true)
+        end
+        if not lifecycle.stopped then
+            lifecycle.stopping = true
+            lifecycle:Quiesce()
+            lifecycle:Finish()
+        end
         if key then
             getgenv()[key] = nil
         end
