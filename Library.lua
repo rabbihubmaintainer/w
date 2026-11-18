@@ -134,6 +134,17 @@ Library.CarbonThemes = {
         Red = "da1e28", LinkColor = "0f62fe", FontFace = "IBM Plex Sans",
     },
 }
+Library.DefaultThemeName = "Catppuccin"
+Library.CatppuccinTheme = {
+    BackgroundColor = "1e1e2e", MainColor = "313244", AccentColor = "cba6f7",
+    OutlineColor = "45475a", FontColor = "cdd6f4", FieldColor = "45475a",
+    HoverColor = "45475a", SelectedColor = "585b70", BorderStrongColor = "7f849c",
+    TextSecondary = "bac2de", TextPlaceholder = "bac2de", FocusColor = "b4befe",
+    Red = "f38ba8", LinkColor = "89b4fa", TextOnAccent = "1e1e2e",
+    ShellColor = "181825", ShellText = "cdd6f4", ButtonHover = "b4befe",
+    ButtonActive = "a6adc8", DangerColor = "f38ba8", DangerHover = "eba0ac",
+    FontFace = "IBM Plex Sans",
+}
 Library.ColorFields = {
     "BackgroundColor", "MainColor", "AccentColor", "OutlineColor", "FontColor",
     "FieldColor", "HoverColor", "SelectedColor", "BorderStrongColor", "TextSecondary",
@@ -208,7 +219,7 @@ function Library:ResolveFont(Value)
     return Success and Face or Font.fromEnum(Enum.Font.Roboto)
 end
 
-Library:ApplyThemeColors(Library.CarbonThemes["Carbon Gray 100"])
+Library:ApplyThemeColors(Library.CatppuccinTheme)
 Library.Scheme.Font = Library:ResolveFont("IBM Plex Sans")
 Library.Scheme.HeadingFont = Font.new(Library.Scheme.Font.Family, Enum.FontWeight.SemiBold, Enum.FontStyle.Normal)
 
@@ -1148,23 +1159,63 @@ function IsValidCustomIcon(Icon: string)
     return typeof(Icon) == "string" and (Icon:match("rbxasset") or Icon:match("roblox%.com/asset/%?id=") or Icon:match("rbxthumb://type="))
 end
 
-local FetchIcons, Icons = pcall(function()
-    return loadstring(
-        game:HttpGet("https://upio-github-mirror.pages.dev/source.lua")
-    )()
-end)
+-- Small native line icons. No remote scripts, image downloads, or executor asset APIs.
+local function Lines(...)
+    local Points, Shape = {...}, {}
+    for Index = 1, #Points - 2, 2 do
+        Shape[#Shape + 1] = {Points[Index], Points[Index + 1], Points[Index + 2], Points[Index + 3]}
+    end
+    return Shape
+end
+local function Combine(...)
+    local Shape = {}
+    for _, Part in ipairs({...}) do for _, Primitive in ipairs(Part) do Shape[#Shape + 1] = Primitive end end
+    return Shape
+end
+local function Circle(X, Y, Radius) return {{Circle = true, X = X, Y = Y, Radius = Radius}} end
+local function Box(X, Y, Width, Height) return Lines(X, Y, X + Width, Y, X + Width, Y + Height, X, Y + Height, X, Y) end
+local Gear = Combine(Circle(12, 12, 7), Circle(12, 12, 2.5))
+for Index = 0, 7 do
+    local Angle = Index * math.pi / 4
+    Gear[#Gear + 1] = {12 + math.cos(Angle) * 7, 12 + math.sin(Angle) * 7, 12 + math.cos(Angle) * 10, 12 + math.sin(Angle) * 10}
+end
+local BuiltinIcons = {
+    sword = Combine(Lines(4, 20, 18, 6, 20, 4, 20, 9, 9, 20), Lines(3, 14, 10, 21), Lines(3, 21, 6, 18)),
+    eye = Combine(Lines(2, 12, 5, 7, 9, 5, 15, 5, 19, 7, 22, 12, 19, 17, 15, 19, 9, 19, 5, 17, 2, 12), Circle(12, 12, 3)),
+    globe = Combine(Circle(12, 12, 9), Lines(3, 12, 21, 12), Lines(12, 3, 8, 7, 7, 12, 8, 17, 12, 21, 16, 17, 17, 12, 16, 7, 12, 3)),
+    zap = Lines(14, 2, 4, 14, 11, 14, 10, 22, 20, 10, 13, 10, 14, 2),
+    wind = Combine(Lines(3, 7, 14, 7, 17, 5, 17, 3, 15, 2), Lines(3, 12, 19, 12, 22, 10, 22, 7, 20, 6), Lines(3, 17, 13, 17, 16, 19, 16, 21, 14, 22)),
+    cog = Gear, settings = Gear,
+    bot = Combine(Box(4, 7, 16, 14), Lines(12, 3, 12, 7), Circle(12, 2, 1), Lines(8, 12, 8, 14), Lines(16, 12, 16, 14), Lines(9, 18, 15, 18), Lines(1, 11, 1, 17), Lines(23, 11, 23, 17)),
+    play = Lines(7, 3, 21, 12, 7, 21, 7, 3),
+    monitor = Combine(Box(2, 3, 20, 14), Lines(12, 17, 12, 21), Lines(7, 21, 17, 21)),
+    save = Combine(Lines(4, 3, 17, 3, 21, 7, 21, 21, 3, 21, 3, 3, 4, 3), Box(7, 3, 9, 6), Box(7, 14, 10, 7)),
+    server = Combine(Box(3, 3, 18, 7), Box(3, 14, 18, 7), Circle(7, 6.5, 0.6), Circle(7, 17.5, 0.6)),
+    check = Lines(4, 12, 9, 17, 20, 6),
+    ["chevron-up"] = Lines(5, 15, 12, 8, 19, 15),
+    ["chevron-down"] = Lines(5, 9, 12, 16, 19, 9),
+    ["move-diagonal-2"] = Combine(Lines(4, 20, 20, 4), Lines(13, 4, 20, 4, 20, 11), Lines(4, 13, 4, 20, 11, 20)),
+    key = Combine(Circle(8, 8, 5), Lines(12, 12, 21, 21), Lines(17, 17, 20, 14), Lines(20, 20, 23, 17)),
+    search = Combine(Circle(10, 10, 6), Lines(15, 15, 21, 21)),
+    move = Combine(Lines(12, 2, 12, 22), Lines(2, 12, 22, 12), Lines(8, 6, 12, 2, 16, 6), Lines(8, 18, 12, 22, 16, 18), Lines(6, 8, 2, 12, 6, 16), Lines(18, 8, 22, 12, 18, 16)),
+    paintbrush = Combine(Lines(9, 14, 17, 3, 21, 7, 11, 16, 9, 14), Lines(9, 14, 5, 14, 4, 18, 2, 21, 7, 21, 10, 18, 11, 16)),
+    ["folder-cog"] = Combine(Lines(3, 20, 3, 5, 9, 5, 11, 8, 21, 8, 21, 20, 3, 20), Circle(13, 14, 3), Lines(13, 9, 13, 11), Lines(13, 17, 13, 19), Lines(8, 14, 10, 14), Lines(16, 14, 18, 14)),
+    grid = Combine(Box(3, 3, 7, 7), Box(14, 3, 7, 7), Box(3, 14, 7, 7), Box(14, 14, 7, 7)),
+}
+
 function Library:GetIcon(IconName: string)
-    if not FetchIcons then
-        return
-    end
-    local Success, Icon = pcall(Icons.GetAsset, IconName)
-    if not Success then
-        return
-    end
-    return Icon
+    if type(IconName) ~= "string" or IconName == "" then return nil end
+    local Name = IconName:gsub("^lucide%-", "")
+    Name = BuiltinIcons[Name] and Name or "grid"
+    return {Url = "rabbihub-icon://" .. Name, ImageRectOffset = Vector2.zero, ImageRectSize = Vector2.zero, Builtin = true, Name = Name}
 end
 
+
 function Library:GetCustomIcon(IconName: string)
+    if type(IconName) == "string" then
+        local Builtin = IconName:match("^rabbihub%-icon://(.+)$")
+        if Builtin then return self:GetIcon(Builtin) end
+    end
     if not IsValidCustomIcon(IconName) then
         return Library:GetIcon(IconName)
     else
@@ -1240,7 +1291,93 @@ local function FillInstance(Table: { [string]: any }, Instance: GuiObject)
     end
 end
 
+local IconStates = setmetatable({}, {__mode = "k"})
+local function ClearBuiltinIcon(Image)
+    local State = IconStates[Image]
+    if not State then return end
+    IconStates[Image] = nil
+    for _, Connection in ipairs(State.Connections) do Connection:Disconnect() end
+    State.Root:Destroy()
+end
+
+local function MountBuiltinIcon(Image, Name)
+    ClearBuiltinIcon(Image)
+    local Shape = BuiltinIcons[Name] or BuiltinIcons.grid
+    local Root = Instance.new("Frame")
+    Root.Name = "BuiltinIcon"
+    Root.BackgroundTransparency = 1
+    Root.AnchorPoint = Vector2.new(0.5, 0.5)
+    Root.Position = UDim2.fromScale(0.5, 0.5)
+    Root.Size = UDim2.fromScale(1, 1)
+    Root.ZIndex = Image.ZIndex
+    Root.Parent = Image
+    local Aspect = Instance.new("UIAspectRatioConstraint")
+    Aspect.AspectRatio = 1
+    Aspect.Parent = Root
+    local Parts, Circles = {}, {}
+    for _, Primitive in ipairs(Shape) do
+        local Part = Instance.new("Frame")
+        Part.Name = Primitive.Circle and "IconCircle" or "IconLine"
+        Part.BorderSizePixel = 0
+        Part.AnchorPoint = Vector2.new(0.5, 0.5)
+        Part.ZIndex = Image.ZIndex
+        Part.Parent = Root
+        local Corner = Instance.new("UICorner")
+        Corner.CornerRadius = UDim.new(1, 0)
+        Corner.Parent = Part
+        if Primitive.Circle then
+            Part.Position = UDim2.fromScale(Primitive.X / 24, Primitive.Y / 24)
+            Part.Size = UDim2.fromScale(Primitive.Radius / 12, Primitive.Radius / 12)
+            Part.BackgroundTransparency = 1
+            local Stroke = Instance.new("UIStroke")
+            Stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            Stroke.Parent = Part
+            Circles[#Circles + 1] = Stroke
+        else
+            local X1, Y1, X2, Y2 = table.unpack(Primitive)
+            local DX, DY = X2 - X1, Y2 - Y1
+            Part.Position = UDim2.fromScale((X1 + X2) / 48, (Y1 + Y2) / 48)
+            Part.Size = UDim2.fromScale(math.sqrt(DX * DX + DY * DY) / 24, 2 / 24)
+            Part.Rotation = math.deg(math.atan2(DY, DX))
+            Parts[#Parts + 1] = Part
+        end
+    end
+    local function Paint()
+        for _, Part in ipairs(Parts) do
+            Part.BackgroundColor3 = Image.ImageColor3
+            Part.BackgroundTransparency = Image.ImageTransparency
+        end
+        for _, Stroke in ipairs(Circles) do
+            Stroke.Color = Image.ImageColor3
+            Stroke.Transparency = Image.ImageTransparency
+            Stroke.Thickness = math.max(1, math.min(Image.AbsoluteSize.X, Image.AbsoluteSize.Y) / 12)
+        end
+    end
+    local State = {Root = Root, Connections = {}}
+    IconStates[Image] = State
+    for _, Property in ipairs({"ImageColor3", "ImageTransparency", "AbsoluteSize"}) do
+        State.Connections[#State.Connections + 1] = Library:GiveSignal(Image:GetPropertyChangedSignal(Property):Connect(Paint))
+    end
+    State.Connections[#State.Connections + 1] = Library:GiveSignal(Image.Destroying:Connect(function() ClearBuiltinIcon(Image) end))
+    Paint()
+end
+
+function Library:SetIcon(Image, Icon)
+    ClearBuiltinIcon(Image)
+    local Name = Icon.Url:match("^rabbihub%-icon://(.+)$")
+    Image.Image = Name and "" or Icon.Url
+    Image.ImageRectOffset = Icon.ImageRectOffset or Vector2.zero
+    Image.ImageRectSize = Icon.ImageRectSize or Vector2.zero
+    if Name then MountBuiltinIcon(Image, Name) end
+end
+
+
 local function New(ClassName: string, Properties: { [string]: any }): any
+    local BuiltinName
+    if (ClassName == "ImageLabel" or ClassName == "ImageButton") and type(Properties.Image) == "string" then
+        BuiltinName = Properties.Image:match("^rabbihub%-icon://(.+)$")
+        if BuiltinName then Properties = table.clone(Properties); Properties.Image = "" end
+    end
     local Instance = Instance.new(ClassName)
 
     if Templates[ClassName] then
@@ -1254,6 +1391,7 @@ local function New(ClassName: string, Properties: { [string]: any }): any
         end)
     end
 
+    if BuiltinName then MountBuiltinIcon(Instance, BuiltinName) end
     return Instance
 end
 
@@ -5339,7 +5477,7 @@ do
         }
 
         local Icon = Library:GetCustomIcon(ImageProperties.Image)
-        assert(Icon, "Image must be a valid Roblox asset or a valid URL or a valid lucide icon.")
+        assert(Icon, "Image must be a valid Roblox asset or a valid URL or a bundled icon name.")
 
         ImageProperties.Image = Icon.Url
         ImageProperties.ImageRectOffset = Icon.ImageRectOffset
@@ -5359,13 +5497,13 @@ do
             assert(typeof(NewImage) == "string", "Image must be a string.")
 
             local Icon = Library:GetCustomIcon(NewImage)
-            assert(Icon, "Image must be a valid Roblox asset or a valid URL or a valid lucide icon.")
+            assert(Icon, "Image must be a valid Roblox asset or a valid URL or a bundled icon name.")
 
             NewImage = Icon.Url
             Image.RectOffset = Icon.ImageRectOffset
             Image.RectSize = Icon.ImageRectSize
 
-            ImageLabel.Image = NewImage
+            Library:SetIcon(ImageLabel, Icon)
             Image.Image = NewImage
         end
 

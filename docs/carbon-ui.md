@@ -8,8 +8,9 @@ with native Roblox GUI objects, rather than the Carbon web component library.
 in `internalscript.lua` are updated together. The modular `src/ui` entry point
 uses the same window and theme defaults.
 
-- Gray 100 is the initial palette. Gray 90, White, and Gray 10 presets are available
-  under Config → Appearance. Existing named and custom themes remain available.
+- Catppuccin Mocha is the initial and reset palette, with a mauve accent and dark
+  text on its lighter actions. Carbon Gray 100, Gray 90, White, and Gray 10 remain
+  available under Config → Appearance. Explicitly saved theme choices are respected.
 - IBM Plex Sans uses the bundled regular/semibold font files when custom font
   assets are supported. Roboto is the fallback.
 - Square panels, a 48 px dark header, left navigation with a blue selection bar,
@@ -21,6 +22,11 @@ uses the same window and theme defaults.
   560 px. The normal left/right panel arrangement returns when space is available.
 - Theme files now retain the complete color-role set and the selected typeface.
   Configuration files retain their existing format and do not override appearance.
+- Navigation, search, switches/pickers, and manager icons use bundled native UI
+  shapes. The icon loader no longer downloads or executes an external icon script.
+  Unknown icon names use a grid fallback; Roblox image assets remain supported.
+  Use `Library:SetIcon(imageLabel, Library:GetIcon(name))` to attach a bundled icon
+  to an image label created outside the library.
 
 ## Verification
 

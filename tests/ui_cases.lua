@@ -15,15 +15,21 @@ local function find(node, name)
     for _, item in ipairs(node:GetDescendants()) do if item.Name == name then return item end end
 end
 
-test('Carbon Gray 100 is the initial palette and square corners are the default', function()
-    equal(color(library.Scheme.BackgroundColor), '161616')
-    equal(color(library.Scheme.AccentColor), '0f62fe')
-    equal(color(library.Scheme.FieldColor), '393939')
+test('Catppuccin Mocha is the initial palette and square corners remain the default', function()
+    equal(library.DefaultThemeName, 'Catppuccin')
+    equal(color(library.Scheme.BackgroundColor), '1e1e2e')
+    equal(color(library.Scheme.AccentColor), 'cba6f7')
+    equal(color(library.Scheme.FieldColor), '45475a')
     equal(library.CornerRadius, 0)
 end)
 themeManager:SetLibrary(library)
 saveManager:SetLibrary(library)
 saveManager:IgnoreThemeSettings()
+test('theme manager and reset alias default to Catppuccin', function()
+    equal(themeManager.DefaultTheme, 'Catppuccin')
+    equal(themeManager.BuiltInThemes.Catppuccin[1], 1)
+    equal(themeManager.BuiltInThemes.Default[2].BackgroundColor, '1e1e2e')
+end)
 test('named Carbon defaults work before building theme controls', function()
     themeManager:SetDefaultTheme('Carbon White')
     equal(color(library.Scheme.BackgroundColor), 'ffffff')
@@ -49,7 +55,7 @@ test('bundled font loader builds regular and semibold family faces', function()
     game.HttpGet = original
 end)
 
-test('Carbon presets keep text and primary actions above WCAG AA contrast', function()
+test('Catppuccin and Carbon presets keep text and primary actions above WCAG AA contrast', function()
     local function luminance(color)
         local function linear(value) return value <= 0.04045 and value / 12.92 or ((value + 0.055) / 1.055) ^ 2.4 end
         return linear(color.R) * 0.2126 + linear(color.G) * 0.7152 + linear(color.B) * 0.0722
@@ -58,7 +64,9 @@ test('Carbon presets keep text and primary actions above WCAG AA contrast', func
         local x, y = luminance(a), luminance(b)
         return (math.max(x, y) + 0.05) / (math.min(x, y) + 0.05)
     end
-    for name in pairs(library.CarbonThemes) do
+    local names = {'Catppuccin'}
+    for name in pairs(library.CarbonThemes) do names[#names + 1] = name end
+    for _, name in ipairs(names) do
         themeManager:ApplyTheme(name)
         local colors = library.Scheme
         assert(contrast(colors.FontColor, colors.MainColor) >= 4.5, name)
@@ -87,6 +95,57 @@ themeManager:ApplyToTab(settings)
 saveManager:BuildConfigSection(settings)
 combat:Show()
 flush()
+
+test('all navigation and control icons have bundled native shapes', function()
+    local original = game.HttpGet
+    game.HttpGet = function() error('Network unavailable') end
+    for _, name in ipairs({'sword', 'eye', 'globe', 'zap', 'wind', 'cog', 'settings', 'bot', 'play', 'monitor', 'save', 'server', 'check', 'chevron-up', 'move-diagonal-2', 'key', 'search', 'move', 'paintbrush', 'folder-cog'}) do
+        local icon = library:GetIcon(name)
+        assert(icon.Builtin and icon.Name == name, name)
+    end
+    local count = 0
+    for _, node in ipairs(library.ScreenGui:GetDescendants()) do
+        if node.Name == 'BuiltinIcon' then assert(#node:GetChildren() > 1); count += 1 end
+    end
+    assert(count >= 10)
+    game.HttpGet = original
+end)
+test('reset applies and saves Catppuccin as the default', function()
+    local found = false
+    for _, button in pairs(library.Buttons) do
+        if button.Text == 'Reset to Catppuccin default' then button.Func(); found = true end
+    end
+    assert(found)
+    equal(files[themeManager.Folder .. '/themes/default.txt'], 'Catppuccin')
+    equal(library.Options.ThemeManager_ThemeList.Value, 'Catppuccin')
+    equal(color(library.Scheme.BackgroundColor), '1e1e2e')
+    themeManager:ApplyTheme('Carbon Gray 100')
+end)
+test('unknown icons have a visible fallback and native assets remain supported', function()
+    equal(library:GetIcon('unknown-icon').Name, 'grid')
+    equal(library:GetIcon(nil), nil)
+    local custom = library:GetCustomIcon('rbxassetid://12345')
+    assert(custom.Custom)
+    equal(custom.Url, 'rbxassetid://12345')
+end)
+test('bundled icons follow tint and transparency and can be replaced safely', function()
+    local image = Instance.new('ImageLabel')
+    image.Size = UDim2.fromOffset(24, 24)
+    image.Parent = library.ScreenGui
+    library:SetIcon(image, library:GetIcon('search'))
+    image.ImageColor3 = Color3.fromHex('cba6f7')
+    image.ImageTransparency = 0.4
+    local line = find(image, 'IconLine')
+    assert(line)
+    equal(color(line.BackgroundColor3), 'cba6f7')
+    equal(line.BackgroundTransparency, 0.4)
+    library:SetIcon(image, library:GetIcon('play'))
+    equal(#image:GetChildren(), 1)
+    library:SetIcon(image, library:GetCustomIcon('rbxassetid://12345'))
+    equal(image.Image, 'rbxassetid://12345')
+    equal(image:FindFirstChild('BuiltinIcon'), nil)
+    image:Destroy()
+end)
 
 test('window and controls are constructed through the real library', function()
     equal(primary.Holder.Size.Y.Offset, 40)

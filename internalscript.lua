@@ -22165,7 +22165,7 @@ end
                 end
 
                 shared.SaveManager:BuildConfigSection(Tabs.Config)
-                shared.ThemeManager:SetDefaultTheme("Carbon Gray 100")
+                shared.ThemeManager:SetDefaultTheme("Catppuccin")
                 shared.ThemeManager:ApplyToTab(Tabs.Config)
 
                 local UtilityGroup = Tabs.Config:AddRightGroupbox("Utility")

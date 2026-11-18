@@ -154,13 +154,14 @@ do
 
     function ThemeManager:SetLibrary(library)
         self.Library = library
-        self.DefaultTheme = "Carbon Gray 100"
+        self.DefaultTheme = library.DefaultThemeName or "Catppuccin"
         if not self.CarbonInstalled then
-            for _, theme in pairs(self.BuiltInThemes) do theme[1] += 4 end
+            for _, theme in pairs(self.BuiltInThemes) do theme[1] += 6 end
             for index, name in ipairs({"Carbon Gray 100", "Carbon Gray 90", "Carbon White", "Carbon Gray 10"}) do
-                self.BuiltInThemes[name] = {index, table.clone(library.CarbonThemes[name])}
+                self.BuiltInThemes[name] = {index + 1, table.clone(library.CarbonThemes[name])}
             end
-            self.BuiltInThemes.Default = {5, table.clone(library.CarbonThemes["Carbon Gray 100"])}
+            self.BuiltInThemes.Catppuccin = {1, table.clone(library.CatppuccinTheme)}
+            self.BuiltInThemes.Default = {6, table.clone(library.CatppuccinTheme)}
             self.CarbonInstalled = true
         end
     end
@@ -259,7 +260,7 @@ do
     end
 
     function ThemeManager:LoadDefault()
-        local theme = self.DefaultTheme or "Carbon Gray 100"
+        local theme = self.DefaultTheme or "Catppuccin"
         local content = isfile(self.Folder .. "/themes/default.txt") and readfile(self.Folder .. "/themes/default.txt")
 
         local isDefault = true
@@ -301,7 +302,7 @@ do
             end
             local face = theme.FontFace
             data.FontFace = typeof(face) == "EnumItem" and face.Name or type(face) == "string" and face or "IBM Plex Sans"
-            self.BuiltInThemes.Default = {5, data}
+            self.BuiltInThemes.Default = {6, data}
             self.DefaultTheme = "Default"
         end
         self:ApplyTheme(self.DefaultTheme)
@@ -368,11 +369,11 @@ do
     function ThemeManager:CreateThemeManager(groupbox)
         local library = self.Library
         local options = library.Options
-        groupbox:AddLabel("Choose a Carbon palette or adjust the colors below.", true)
+        groupbox:AddLabel("Choose a color theme or adjust the colors below.", true)
         local themes = {}
         for name in pairs(self.BuiltInThemes) do themes[#themes + 1] = name end
         table.sort(themes, function(a, b) return self.BuiltInThemes[a][1] < self.BuiltInThemes[b][1] end)
-        groupbox:AddDropdown("ThemeManager_ThemeList", {Text = "Color theme", Values = themes, Default = self.DefaultTheme or "Carbon Gray 100"})
+        groupbox:AddDropdown("ThemeManager_ThemeList", {Text = "Color theme", Values = themes, Default = self.DefaultTheme or "Catppuccin"})
         options.ThemeManager_ThemeList:OnChanged(function() self:ApplyTheme(options.ThemeManager_ThemeList.Value) end)
         groupbox:AddButton({Text = "Use as default", Variant = "Primary", Func = function()
             self:SaveDefault(options.ThemeManager_ThemeList.Value)
@@ -421,9 +422,9 @@ do
             self:SaveDefault(name)
             library:Notify("Default appearance updated")
         end})
-        groupbox:AddButton({Text = "Reset to Carbon default", Variant = "Ghost", Func = function()
-            self:SaveDefault("Carbon Gray 100")
-            options.ThemeManager_ThemeList:SetValue("Carbon Gray 100")
+        groupbox:AddButton({Text = "Reset to Catppuccin default", Variant = "Ghost", Func = function()
+            self:SaveDefault("Catppuccin")
+            options.ThemeManager_ThemeList:SetValue("Catppuccin")
         end})
         for _, field in ipairs({"BackgroundColor", "MainColor", "AccentColor", "OutlineColor", "FontColor", "TextSecondary", "FocusColor"}) do
             options[field]:OnChanged(function() self:ThemeUpdate() end)

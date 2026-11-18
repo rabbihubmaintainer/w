@@ -207,6 +207,7 @@ local instanceMeta = {
             if value then value._children[#value._children + 1] = node end
         end
         node._properties[key] = value
+        if (key == 'ImageColor3' or key == 'ImageTransparency') and node._events[key] then node._events[key]:Fire() end
     end,
 }
 function Instance.new(class)
@@ -215,6 +216,7 @@ function Instance.new(class)
     node.Size = UDim2.fromOffset(0, 0); node.Position = UDim2.fromOffset(0, 0); node.AnchorPoint = Vector2.zero
     node.Visible = true; node.BackgroundTransparency = 0; node.TextTransparency = 0; node.ImageTransparency = 0
     node.BackgroundColor3 = Color3.new(1, 1, 1); node.TextColor3 = Color3.new(0, 0, 0)
+    node.ImageColor3 = Color3.new(1, 1, 1)
     node.Text = ""; node.TextSize = 14; node.LayoutOrder = 0; node.ZIndex = 1
     node.BorderSizePixel = 0; node.BorderColor3 = Color3.new(0, 0, 0)
     node.PaddingLeft = UDim.new(); node.PaddingRight = UDim.new(); node.PaddingTop = UDim.new(); node.PaddingBottom = UDim.new(); node.Padding = UDim.new()
@@ -235,6 +237,7 @@ function Methods:GetDescendants()
 end
 function Methods:GetPropertyChangedSignal(name) self._events[name] = self._events[name] or signal(); return self._events[name] end
 function Methods:Destroy()
+    self.Destroying:Fire()
     local parent = self.Parent
     while parent do parent.DescendantRemoving:Fire(self); parent = parent.Parent end
     for _, child in ipairs(self:GetChildren()) do child:Destroy() end
