@@ -29,6 +29,10 @@ return function(ctx)
         }
 
         function esp:update(maxRange)
+            if ctx.library and ctx.library.Toggled then
+                self.text.Visible = false
+                return
+            end
             if not self.part or not self.part.Parent then
                 self:destruct()
                 return

@@ -1,4 +1,7 @@
-# IBM Plex Sans
+# Optional IBM Plex Sans typeface
+
+The interface defaults to Roblox's built-in Builder Sans. These files support the
+optional IBM Plex Sans choice in the appearance settings.
 
 The unmodified regular and semibold font files come from
 [IBM Plex](https://github.com/IBM/plex/tree/master/packages/plex-sans/fonts/complete/ttf).

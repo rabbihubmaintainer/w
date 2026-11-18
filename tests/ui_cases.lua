@@ -15,12 +15,13 @@ local function find(node, name)
     for _, item in ipairs(node:GetDescendants()) do if item.Name == name then return item end end
 end
 
-test('Catppuccin Mocha is the initial palette and square corners remain the default', function()
+test('Catppuccin Mocha uses softer surfaces and rounded panels by default', function()
     equal(library.DefaultThemeName, 'Catppuccin')
     equal(color(library.Scheme.BackgroundColor), '1e1e2e')
     equal(color(library.Scheme.AccentColor), 'cba6f7')
-    equal(color(library.Scheme.FieldColor), '45475a')
-    equal(library.CornerRadius, 0)
+    equal(color(library.Scheme.FieldColor), '303247')
+    equal(library.CornerRadius, 10)
+    equal(library.DefaultFontName, 'BuilderSans')
 end)
 themeManager:SetLibrary(library)
 saveManager:SetLibrary(library)
@@ -77,7 +78,7 @@ test('Catppuccin and Carbon presets keep text and primary actions above WCAG AA 
     themeManager:ApplyTheme('Carbon Gray 100')
 end)
 
-local window = library:CreateWindow({Title = 'rabbihub', Footer = 'Settings workspace', AutoShow = false, Font = 'IBM Plex Sans'})
+local window = library:CreateWindow({Title = 'rabbihub', Footer = '', AutoShow = false, Font = 'BuilderSans'})
 local combat = window:AddTab('Combat', 'sword', 'Configure your workspace')
 local settings = window:AddTab('Appearance', 'settings')
 local left = combat:AddLeftGroupbox('Combat utilities')
@@ -91,6 +92,11 @@ local dropdown = right:AddDropdown('test_dropdown', {Text = 'Target priority', V
 local primary = left:AddButton({Text = 'Apply settings', Variant = 'Primary', Func = function() end})
 local secondary = right:AddButton({Text = 'Reset settings', Variant = 'Secondary', Func = function() end})
 local hidden = right:AddButton({Text = 'Hidden action', Visible = false, Func = function() end})
+local proximityPanel = combat:AddRightGroupbox('Server safety')
+local compactProximity = proximityPanel:AddSlider('test_proximity', {Text = 'Proximity Check (studs)', Min = 0, Max = 1000, Default = 352, Rounding = 0, Compact = true})
+local compactCritical = proximityPanel:AddSlider('test_critical', {Text = 'Critical Distance (studs)', Min = 0, Max = 1000, Default = 165, Rounding = 0, Compact = true})
+local compactPlayers = proximityPanel:AddSlider('test_players', {Text = 'Min Player Count', Min = 0, Max = 23, Default = 2, Rounding = 0, Compact = true})
+local longToggle = proximityPanel:AddToggle('test_long_toggle', {Text = 'Automatically disable when the window is unfocused', Default = false})
 themeManager:ApplyToTab(settings)
 saveManager:BuildConfigSection(settings)
 combat:Show()
@@ -149,10 +155,10 @@ end)
 
 test('window and controls are constructed through the real library', function()
     equal(primary.Holder.Size.Y.Offset, 40)
-    equal(input.Holder.Size.Y.Offset, 64)
-    equal(dropdown.Holder.Size.Y.Offset, 64)
+    assert(input.Holder.Size.Y.Offset >= 64)
+    assert(dropdown.Holder.Size.Y.Offset >= 64)
     equal(hidden.Holder.Visible, false)
-    equal(toggle.Holder.Size.Y.Offset, 32)
+    equal(toggle.Holder.Size.Y.Offset, 36)
 end)
 test('toggle callbacks and dependency updates still run', function()
     toggle:SetValue(false)
@@ -248,6 +254,82 @@ test('narrow windows stack right panels and can return to two columns', function
     assert(left.BoxHolder.Parent ~= right.BoxHolder.Parent)
     equal(combat.Sides[2].Visible, true)
 end)
+test('compact sliders keep full setting names out of the numeric value badge', function()
+    for _, item in ipairs({{compactProximity, 'Proximity Check (studs)', '352'}, {compactCritical, 'Critical Distance (studs)', '165'}, {compactPlayers, 'Min Player Count', '2'}}) do
+        equal(item[1].Label.Text, item[2])
+        equal(item[1].ValueLabel.Text, item[3])
+        assert(item[1].Track.Size.X.Scale == 1 and item[1].Track.Size.X.Offset == 0)
+    end
+end)
+test('long slider names wrap without overlapping the value or track', function()
+    local old = proximityPanel.BoxHolder.Size
+    proximityPanel.BoxHolder.Size = UDim2.fromOffset(230, old.Y.Offset)
+    for _, item in ipairs({compactProximity, compactCritical, compactPlayers}) do
+        item:Reflow()
+        local label, value, track = item.Label, item.ValueLabel, item.Track
+        assert(label.AbsolutePosition.X + label.AbsoluteSize.X <= value.AbsolutePosition.X - 8)
+        assert(track.AbsolutePosition.Y >= label.AbsolutePosition.Y + label.AbsoluteSize.Y)
+        assert(item.Holder.AbsoluteSize.Y >= track.Position.Y.Offset + track.AbsoluteSize.Y)
+    end
+    assert(compactProximity.Label.AbsoluteSize.Y > 26)
+    proximityPanel.BoxHolder.Size = old
+    compactProximity:Reflow(); compactCritical:Reflow(); compactPlayers:Reflow()
+end)
+test('panel content is below its header and its slot encloses all rows', function()
+    for _, panel in ipairs({left, right, proximityPanel}) do
+        panel:Resize()
+        assert(panel.Container.AbsolutePosition.Y >= panel.Header.AbsolutePosition.Y + panel.Header.AbsoluteSize.Y)
+        assert(panel.Container.AbsolutePosition.Y + panel.Container.AbsoluteSize.Y <= panel.BoxHolder.AbsolutePosition.Y + panel.BoxHolder.AbsoluteSize.Y + 1)
+    end
+    for _, side in ipairs(combat.Sides) do
+        for _, child in ipairs(side:GetChildren()) do
+            if child:IsA('Frame') then equal(child.Name, 'PanelSlot') end
+        end
+    end
+end)
+test('long toggle labels grow their rows instead of clipping text', function()
+    local old = proximityPanel.BoxHolder.Size
+    proximityPanel.BoxHolder.Size = UDim2.fromOffset(230, old.Y.Offset)
+    longToggle:Reflow()
+    assert(longToggle.Holder.Size.Y.Offset > 36)
+    assert(longToggle.TextLabel.TextWrapped)
+    proximityPanel.BoxHolder.Size = old
+    longToggle:Reflow()
+end)
+test('viewport resizing fits the window and preserves readable text across resolutions', function()
+    for _, resolution in ipairs({{3840, 2160}, {1920, 1080}, {1440, 900}, {1280, 720}, {960, 540}, {640, 480}, {360, 640}}) do
+        workspace.CurrentCamera.ViewportSize = Vector2.new(resolution[1], resolution[2])
+        window:Reflow()
+        local frame = window.Frame
+        assert(frame.Position.X.Offset >= 0 and frame.Position.Y.Offset >= 0)
+        assert(frame.Position.X.Offset + frame.Size.X.Offset <= resolution[1] + 1)
+        assert(frame.Position.Y.Offset + frame.Size.Y.Offset <= resolution[2] + 1)
+        assert(compactProximity.Label.TextSize >= 15)
+        assert(compactProximity.Label.AbsolutePosition.X + compactProximity.Label.AbsoluteSize.X <= compactProximity.ValueLabel.AbsolutePosition.X)
+        local context, search = find(frame, 'PageContext'), find(frame, 'SettingsSearch')
+        if search.Visible then assert(context.AbsolutePosition.X + context.AbsoluteSize.X <= search.AbsolutePosition.X) end
+    end
+    workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
+end)
+test('DPI changes do not accumulate and slider labels return to their original size', function()
+    for _ = 1, 3 do
+        workspace.CurrentCamera.ViewportSize = Vector2.new(1920, 1080)
+        workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
+    end
+    equal(library.DPIScale, 1)
+    equal(compactProximity.Label.TextSize, 15)
+    equal(compactProximity.ValueLabel.Text, '352')
+end)
+test('replacing the camera rebinds viewport sizing and disconnects the old listener', function()
+    local previous = workspace.CurrentCamera
+    local camera = Instance.new('Camera')
+    camera.ViewportSize = Vector2.new(800, 600)
+    workspace.CurrentCamera = camera
+    workspace:GetPropertyChangedSignal('CurrentCamera'):Fire()
+    assert(window.Frame.Size.X.Offset <= 768)
+    for _, connection in ipairs(previous:GetPropertyChangedSignal('ViewportSize').connections) do equal(connection.Connected, false) end
+    camera.ViewportSize = Vector2.new(1440, 1000)
+end)
 test('destructive configuration actions use a danger button and confirmation', function()
     local found = false
     for _, button in pairs(library.Buttons) do
@@ -255,8 +337,18 @@ test('destructive configuration actions use a danger button and confirmation', f
     end
     assert(found)
 end)
+test('world overlay labels hide while the menu is open and resume when it closes', function()
+    for _, kind in ipairs({'player', 'trinket', 'fallion', 'npc', 'ingredient', 'ore'}) do
+        local tick = overlayHarness(kind)
+        library.Toggled = false; equal(tick(), true)
+        library.Toggled = true; equal(tick(), false)
+        library.Toggled = false; equal(tick(), true)
+    end
+end)
 
 local main = library.ScreenGui:FindFirstChild('Main')
+themeManager:ApplyTheme('Catppuccin')
+window:FitToViewport()
 main.Visible = true
 combat:Show()
 flush()

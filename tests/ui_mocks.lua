@@ -5,7 +5,10 @@ local function typed(kind, values)
     return values
 end
 local function typeof(value) return type(value) == "table" and value.__kind or type(value) end
-local Vector2 = {new = function(x, y) return typed("Vector2", {X = x or 0, Y = y or 0}) end}
+local vectorMeta = {__mul = function(vector, factor)
+    return setmetatable(typed('Vector2', {X = vector.X * factor, Y = vector.Y * factor}), getmetatable(vector))
+end}
+local Vector2 = {new = function(x, y) return setmetatable(typed("Vector2", {X = x or 0, Y = y or 0}), vectorMeta) end}
 Vector2.zero = Vector2.new()
 local Vector3 = {new = function(x, y, z) return typed("Vector3", {X = x or 0, Y = y or 0, Z = z or 0}) end}
 Vector3.zero = Vector3.new()
@@ -206,14 +209,17 @@ local instanceMeta = {
             if old then local i = table.find(old._children, node); if i then table.remove(old._children, i) end end
             if value then value._children[#value._children + 1] = node end
         end
+        local previous = node._properties[key]
         node._properties[key] = value
         if (key == 'ImageColor3' or key == 'ImageTransparency') and node._events[key] then node._events[key]:Fire() end
+        if key == 'ViewportSize' and previous ~= value and node._events[key] then node._events[key]:Fire() end
     end,
 }
 function Instance.new(class)
     local node = setmetatable({__kind = "Instance", _properties = {}, _children = {}, _events = {}, _id = #all + 1}, instanceMeta)
     node.ClassName = class; node.Name = class
     node.Size = UDim2.fromOffset(0, 0); node.Position = UDim2.fromOffset(0, 0); node.AnchorPoint = Vector2.zero
+    if class == 'Frame' then node.Size = UDim2.fromOffset(100, 100) end
     node.Visible = true; node.BackgroundTransparency = 0; node.TextTransparency = 0; node.ImageTransparency = 0
     node.BackgroundColor3 = Color3.new(1, 1, 1); node.TextColor3 = Color3.new(0, 0, 0)
     node.ImageColor3 = Color3.new(1, 1, 1)
@@ -308,7 +314,9 @@ function services.UserInputService:GetFocusedTextBox() return nil end
 services.UserInputService.MouseEnabled = true
 services.Teams = Instance.new("Teams")
 services.SoundService = Instance.new("SoundService")
-local workspace = {CurrentCamera = {ViewportSize = Vector2.new(1440, 1000)}}
+local workspace = Instance.new('Workspace')
+workspace.CurrentCamera = Instance.new('Camera')
+workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
 local game = {GetService = function(_, name) return assert(services[name], name) end}
 function game:HttpGet() return "return {GetAsset = function() return nil end}" end
 local environment = {}

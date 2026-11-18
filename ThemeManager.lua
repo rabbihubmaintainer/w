@@ -223,11 +223,11 @@ do
         end
         self.ApplyingTheme = true
         self.Library:ApplyThemeColors(colors)
-        self.Library:SetFont(data.FontFace or "IBM Plex Sans")
+        self.Library:SetFont(data.FontFace or self.Library.DefaultFontName)
         for _, field in ipairs(self.Library.ColorFields) do
             if self.Library.Options[field] then self.Library.Options[field]:SetValueRGB(self.Library.Scheme[field]) end
         end
-        if self.Library.Options.FontFace then self.Library.Options.FontFace:SetValue(data.FontFace or "IBM Plex Sans") end
+        if self.Library.Options.FontFace then self.Library.Options.FontFace:SetValue(data.FontFace or self.Library.DefaultFontName) end
         self.ApplyingTheme = false
         self.Library:UpdateColorsUsingRegistry()
         return true
@@ -315,7 +315,7 @@ do
         local theme = {}
         for _, field in ipairs(self.Library.ColorFields) do theme[field] = self.Library.Scheme[field]:ToHex() end
         local picker = self.Library.Options.FontFace
-        theme.FontFace = picker and picker.Value or "IBM Plex Sans"
+        theme.FontFace = picker and picker.Value or self.Library.DefaultFontName
         local ok = pcall(writefile, self.Folder .. "/themes/" .. file .. ".json", httpService:JSONEncode(theme))
         return ok, ok and nil or "Could not save theme"
     end
@@ -388,7 +388,7 @@ do
             groupbox:AddLabel(field[2]):AddColorPicker(field[1], {Default = library.Scheme[field[1]]})
         end
         groupbox:AddDropdown("FontFace", {
-            Text = "Typeface", Default = "IBM Plex Sans",
+            Text = "Typeface", Default = self.Library.DefaultFontName,
             Values = {"IBM Plex Sans", "BuilderSans", "Code", "Gotham", "Roboto", "RobotoMono", "SourceSans"},
         })
         groupbox:AddDivider()

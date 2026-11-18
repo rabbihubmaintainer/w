@@ -18,6 +18,33 @@ for name, filename, function in [
 ]:
     source = (tests.parent / filename).read_text()
     runner = runner.replace('-- @' + name + '@', 'local function ' + function + '()\n' + source + '\nend')
+main_source = (tests.parent / 'internalscript.lua').read_text()
+overlay_functions = []
+for kind in ['player', 'trinket', 'fallion', 'npc', 'ingredient', 'ore']:
+    start = main_source.index('                local function start_' + kind + '_esp_rendering()')
+    end = main_source.index('                local function stop_' + kind + '_esp_rendering()', start)
+    overlay_functions.append(main_source[start:end])
+runner += '''
+local function overlayHarness(kind)
+    local calls, callback = {}, nil
+    local esp_render_connections = {}
+    local cheat_client = {}
+    for _, category in ipairs({'player', 'trinket', 'fallion', 'npc', 'ingredient', 'ore'}) do
+        local item = {}
+        item['update_' .. category .. '_esp'] = function(enabled) calls[#calls + 1] = enabled end
+        cheat_client[category .. '_esp_objects'] = {item}
+    end
+    local utility = {Connection = function(_, _, handler) callback = handler; return {} end}
+    local rs = services.RunService
+    local function LPH_NO_VIRTUALIZE(handler) return handler end
+''' + '\n'.join(overlay_functions) + '''
+    local starts = {player = start_player_esp_rendering, trinket = start_trinket_esp_rendering,
+        fallion = start_fallion_esp_rendering, npc = start_npc_esp_rendering,
+        ingredient = start_ingredient_esp_rendering, ore = start_ore_esp_rendering}
+    starts[kind]()
+    return function() callback(); callback(); return calls[#calls] end
+end
+'''
 runner += '\n' + (tests / 'ui_cases.lua').read_text()
 with tempfile.TemporaryDirectory(prefix='carbon-ui-') as temporary:
     script = Path(temporary) / 'ui-tests.lua'

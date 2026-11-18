@@ -45,6 +45,10 @@ return function(ctx)
         }
 
         function esp:update()
+            if ctx.library and ctx.library.Toggled then
+                self:hide()
+                return
+            end
             local Toggles = getgenv().Toggles
             local Options = getgenv().Options
             if not (Toggles and Toggles.PlayerEsp and Toggles.PlayerEsp.Value) then

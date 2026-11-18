@@ -5366,7 +5366,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         for player, esp in pairs(cheat_client.player_esp_objects or {}) do
                             if esp.update_player_esp then
                                 -- pcall shields the whole RenderStepped loop from one bad player crashing everyone
-                                pcall(esp.update_player_esp, true)
+                                pcall(esp.update_player_esp, not (library and library.Toggled))
                             end
                         end
                     end))
@@ -5453,7 +5453,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         for trinket, esp in pairs(cheat_client.trinket_esp_objects or {}) do
                             if esp.update_trinket_esp then
-                                esp.update_trinket_esp(true)
+                                esp.update_trinket_esp(not (library and library.Toggled))
                             end
                         end
                     end))
@@ -5483,7 +5483,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         for npc, esp in pairs(cheat_client.fallion_esp_objects or {}) do
                             if esp.update_fallion_esp then
-                                esp.update_fallion_esp(true)
+                                esp.update_fallion_esp(not (library and library.Toggled))
                             end
                         end
                     end))
@@ -5513,7 +5513,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         for npc, esp in pairs(cheat_client.npc_esp_objects or {}) do
                             if esp.update_npc_esp then
-                                esp.update_npc_esp(true)
+                                esp.update_npc_esp(not (library and library.Toggled))
                             end
                         end
                     end))
@@ -5542,7 +5542,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         for ingredient, esp in pairs(cheat_client.ingredient_esp_objects or {}) do
                             if esp.update_ingredient_esp then
-                                esp.update_ingredient_esp(true)
+                                esp.update_ingredient_esp(not (library and library.Toggled))
                             end
                         end
                     end))
@@ -5571,7 +5571,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                         for ore, esp in pairs(cheat_client.ore_esp_objects or {}) do
                             if esp.update_ore_esp then
-                                esp.update_ore_esp(true)
+                                esp.update_ore_esp(not (library and library.Toggled))
                             end
                         end
                     end))
@@ -7314,11 +7314,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         local window = library:CreateWindow({
             Title = HXD_UserNote and string.format("jewhub | %s", HXD_UserNote:sub(1,1):upper() .. HXD_UserNote:sub(2)) or "jewhub",
             NotifySide = "Left",
-            Footer = "Settings workspace",
-            Font = "IBM Plex Sans",
-            Size = UDim2.fromOffset(1040, 720),
-            SidebarWidth = 208,
-            CornerRadius = 0,
+            Footer = "",
+            Font = "BuilderSans",
+            Size = UDim2.fromOffset(1080, 760),
+            SidebarWidth = 192,
+            CornerRadius = 10,
             ShowCustomCursor = false,
             Center = true,
             AutoShow = false,
@@ -27879,7 +27879,7 @@ end
                     local mouse_pos = Vector2.new(uis:GetMouseLocation().X, uis:GetMouseLocation().Y)
                     aimbot_fov_circle.Position = mouse_pos
                     aimbot_fov_circle.Radius = (Options and Options.SilentAimFov and Options.SilentAimFov.Value) or 100
-                    aimbot_fov_circle.Visible = cheat_client.window_active and not isHideFovCircleEnabled
+                    aimbot_fov_circle.Visible = cheat_client.window_active and not (library and library.Toggled) and not isHideFovCircleEnabled
 
                     local nearest_player = get_nearest_player()
                     if cheat_client and cheat_client.aimbot then

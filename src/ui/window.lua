@@ -59,12 +59,12 @@ return function(ctx)
     -- Create Main Window
     local window = library:CreateWindow({
         Title = "rabbihub.cc",
-        Font = "IBM Plex Sans",
-        Size = UDim2.fromOffset(1040, 720),
-        SidebarWidth = 208,
-        CornerRadius = 0,
+        Font = "BuilderSans",
+        Size = UDim2.fromOffset(1080, 760),
+        SidebarWidth = 192,
+        CornerRadius = 10,
         ShowCustomCursor = false,
-        Footer = "Settings workspace",
+        Footer = "",
         Center = true,
         AutoShow = true,
         TabPadding = 8,
