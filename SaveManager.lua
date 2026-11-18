@@ -119,6 +119,7 @@ local SaveManager = {} do
     function SaveManager:IgnoreThemeSettings()
         self:SetIgnoreIndexes({
             "BackgroundColor", "MainColor", "AccentColor", "OutlineColor", "FontColor", "FontFace", -- themes
+            "TextSecondary", "FocusColor", -- Carbon appearance is saved by ThemeManager
             "ThemeManager_ThemeList", "ThemeManager_CustomThemeList", "ThemeManager_CustomThemeName", -- themes
         })
     end
@@ -432,10 +433,11 @@ local SaveManager = {} do
     function SaveManager:BuildConfigSection(tab)
         assert(self.Library, "Must set SaveManager.Library")
 
-        local section = tab:AddRightGroupbox("Configuration", "folder-cog")
+        local section = tab:AddRightGroupbox("Saved configurations", "folder-cog")
+        section:AddLabel("Save a workspace and restore it whenever you need it.", true)
 
-        section:AddInput("SaveManager_ConfigName",    { Text = "Config name" })
-        section:AddButton("Create config", function()
+        section:AddInput("SaveManager_ConfigName",    { Text = "New configuration name", Placeholder = "e.g. Everyday", ClearTextOnFocus = false })
+        section:AddButton({Text = "Create config", Variant = "Primary", Func = function()
             local name = self.Library.Options.SaveManager_ConfigName.Value
 
             if name:gsub(" ", "") == "" then
@@ -452,12 +454,12 @@ local SaveManager = {} do
             self.Library:Notify(string.format("Created config %q", name))
             self.Library.Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
             self.Library.Options.SaveManager_ConfigList:SetValue(nil)
-        end)
+        end})
 
         section:AddDivider()
 
-        section:AddDropdown("SaveManager_ConfigList", { Text = "Config list", Values = self:RefreshConfigList(), AllowNull = true })
-        section:AddButton("Load config", function()
+        section:AddDropdown("SaveManager_ConfigList", { Text = "Saved configurations", Values = self:RefreshConfigList(), AllowNull = true })
+        section:AddButton({Text = "Load config", Variant = "Primary", Func = function()
             local name = self.Library.Options.SaveManager_ConfigList.Value
 
             local success, err = self:Load(name)
@@ -467,8 +469,8 @@ local SaveManager = {} do
             end
 
             self.Library:Notify(string.format("Loaded config %q", name))
-        end)
-        section:AddButton("Overwrite config", function()
+        end})
+        section:AddButton({Text = "Overwrite config", Variant = "Secondary", Func = function()
             local name = self.Library.Options.SaveManager_ConfigList.Value
 
             local success, err = self:Save(name)
@@ -478,9 +480,9 @@ local SaveManager = {} do
             end
 
             self.Library:Notify(string.format("Overwrote config %q", name))
-        end)
+        end})
 
-        section:AddButton("Delete config", function()
+        section:AddButton({Text = "Delete config", Variant = "Danger", DoubleClick = true, Func = function()
             local name = self.Library.Options.SaveManager_ConfigList.Value
 
             local success, err = self:Delete(name)
@@ -492,14 +494,14 @@ local SaveManager = {} do
             self.Library:Notify(string.format("Deleted config %q", name))
             self.Library.Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
             self.Library.Options.SaveManager_ConfigList:SetValue(nil)
-        end)
+        end})
 
-        section:AddButton("Refresh list", function()
+        section:AddButton({Text = "Refresh list", Variant = "Ghost", Func = function()
             self.Library.Options.SaveManager_ConfigList:SetValues(self:RefreshConfigList())
             self.Library.Options.SaveManager_ConfigList:SetValue(nil)
-        end)
+        end})
 
-        section:AddButton("Set as autoload", function()
+        section:AddButton({Text = "Set as autoload", Variant = "Secondary", Func = function()
             local name = self.Library.Options.SaveManager_ConfigList.Value
 
             local success, err = self:SaveAutoloadConfig(name)
@@ -510,8 +512,8 @@ local SaveManager = {} do
 
             self.Library:Notify(string.format("Set %q to auto load", name))
             self.AutoloadConfigLabel:SetText("Current autoload config: " .. name)
-        end)
-        section:AddButton("Reset autoload", function()
+        end})
+        section:AddButton({Text = "Reset autoload", Variant = "Ghost", Func = function()
             local success, err = self:DeleteAutoLoadConfig()
             if not success then
                 self.Library:Notify("Failed to set autoload config: " .. err)
@@ -520,7 +522,7 @@ local SaveManager = {} do
 
             self.Library:Notify("Set autoload to none")
             self.AutoloadConfigLabel:SetText("Current autoload config: none")
-        end)
+        end})
 
         self.AutoloadConfigLabel = section:AddLabel("Current autoload config: " .. self:GetAutoloadConfig(), true)
 

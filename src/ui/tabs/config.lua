@@ -17,7 +17,7 @@ return function(ctx)
         shared.SaveManager:SetIgnoreIndexes({ "SavedPaths" })
 
         shared.SaveManager:BuildConfigSection(Tabs.Config)
-        shared.ThemeManager:SetDefaultTheme("Tokyo Night")
+        shared.ThemeManager:SetDefaultTheme("Carbon Gray 100")
         shared.ThemeManager:ApplyToTab(Tabs.Config)
 
         local UtilityGroup = Tabs.Config:AddRightGroupbox("Utility")

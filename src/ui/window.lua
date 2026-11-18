@@ -1,5 +1,5 @@
 -- language: Lua, file: src/ui/window.lua, target: Roblox Executor
--- Linoria UI Library initialization, main window setup, and tab registration
+-- Carbon-style UI initialization, main window setup, and tab registration
 
 return function(ctx)
     local shared = ctx.shared
@@ -59,6 +59,12 @@ return function(ctx)
     -- Create Main Window
     local window = library:CreateWindow({
         Title = "rabbihub.cc",
+        Font = "IBM Plex Sans",
+        Size = UDim2.fromOffset(1040, 720),
+        SidebarWidth = 208,
+        CornerRadius = 0,
+        ShowCustomCursor = false,
+        Footer = "Settings workspace",
         Center = true,
         AutoShow = true,
         TabPadding = 8,

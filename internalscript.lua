@@ -7314,7 +7314,12 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
         local window = library:CreateWindow({
             Title = HXD_UserNote and string.format("jewhub | %s", HXD_UserNote:sub(1,1):upper() .. HXD_UserNote:sub(2)) or "jewhub",
             NotifySide = "Left",
-            Footer = "",
+            Footer = "Settings workspace",
+            Font = "IBM Plex Sans",
+            Size = UDim2.fromOffset(1040, 720),
+            SidebarWidth = 208,
+            CornerRadius = 0,
+            ShowCustomCursor = false,
             Center = true,
             AutoShow = false,
             Resizable = true,
@@ -22160,7 +22165,7 @@ end
                 end
 
                 shared.SaveManager:BuildConfigSection(Tabs.Config)
-                shared.ThemeManager:SetDefaultTheme("Tokyo Night")
+                shared.ThemeManager:SetDefaultTheme("Carbon Gray 100")
                 shared.ThemeManager:ApplyToTab(Tabs.Config)
 
                 local UtilityGroup = Tabs.Config:AddRightGroupbox("Utility")
