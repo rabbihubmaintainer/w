@@ -12858,6 +12858,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return nearest, nearest_distance
             end
 
+            local emergency_logout
+            local function check_critical_player()
+                if shared.is_unloading or trinket_bot.stop_requested or trinket_bot.test_mode
+                    or (Toggles.StayInServer and Toggles.StayInServer.Value) then return false end
+                local radius = tonumber(Options.CriticalDistance and Options.CriticalDistance.Value) or 60
+                if radius <= 0 then return false end
+                local player, distance = nearby_loot_bot_player(radius)
+                if player then
+                    return emergency_logout(string.format("Critical distance: %s within %.0f studs", player.Name, distance))
+                end
+                return false
+            end
+
             local function loot_bot_can_collect(destination)
                 local character = plr.Character
                 local root = character and FindFirstChild(character, "HumanoidRootPart")
@@ -12878,6 +12891,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     and not trinket_bot.moderator_detected and not emergency_gate_requested do
                     local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
                     if plr.Character ~= character or not root or not root.Parent or (humanoid and humanoid.Health <= 0) then break end
+                    if check_critical_player() then return false end
                     local radius = get_bot_safety_radius(include_proximity) + (paused and 15 or 0)
                     local player = nearby_loot_bot_player(radius, destination)
                     if player then
@@ -13554,8 +13568,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return false
             end
 
+            local function finish_emergency_hop()
+                local ok, success = pcall(function() return utility:Serverhop() end)
+                if (not ok or not success) and not shared.is_unloading then
+                    plr:Kick("Emergency logout: serverhop failed")
+                end
+            end
+
             local teleport_debounce = false
-            local function DoTrinketBotServerhop(reason, skip_test_mode_check, force_moderator_hop)
+            local function DoTrinketBotServerhop(reason, skip_test_mode_check, force_moderator_hop, immediate_logout)
                 trinket_bot.path_running = false
                 cancel_bot_movement()
                 if not force_moderator_hop and not skip_test_mode_check and trinket_bot.test_mode then
@@ -13571,6 +13592,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                     return
                 end
+
+                if immediate_logout then mem:SetItem("botstarted", "true") end
 
                 if trinket_bot.current_path_name and trinket_bot.current_path_name ~= "" then
                     mem:SetItem("trinket_bot_path", trinket_bot.current_path_name)
@@ -13590,7 +13613,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     current_count = tonumber(mem:GetItem("serverhop_count")) or 0
                 end
 
-                if current_count > 0 and current_count % 10 == 0 and utility then
+                if not immediate_logout and current_count > 0 and current_count % 10 == 0 and utility then
                     utility:clear_server_history()
                     library:Notify("Server cache cleared (10 serverhops)")
                 end
@@ -13632,7 +13655,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     mem:SetItem("trinket_bot_settings", httpService:JSONEncode(settings_to_save))
                 end)
 
-                if reason and utility then
+                if reason and utility and not immediate_logout then
                     local boiii = reason:lower():find("repeat encounter") or reason:lower():find("unfriendly player")
 
                     if boiii then
@@ -13785,6 +13808,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     trinket_bot.pending_artifact_logs = {}
                 end
 
+                if immediate_logout then
+                    finish_emergency_hop()
+                    return
+                end
+
                 local serverhop_success = false
                 if InAir() then
                     serverhop_success = utility:Serverhop()
@@ -13862,6 +13890,26 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local function TrinketBotServerhop(...)
                 return run_bot_hop(DoTrinketBotServerhop, ...)
+            end
+
+            emergency_logout = function(reason)
+                if shared.is_unloading or trinket_bot.stop_requested or trinket_bot.test_mode
+                    or (Toggles.StayInServer and Toggles.StayInServer.Value) then return false end
+                if trinket_bot.critical_logout_requested then return true end
+                trinket_bot.critical_logout_requested = true
+                trinket_bot.path_running = false
+                trinket_bot.safety_paused = false
+                emergency_gate_requested = nil
+                cancel_bot_movement()
+                -- Dispatch logout first. A slow InvokeServer must not block the
+                -- independent server-hop attempt, and neither waits for a gate.
+                task.spawn(function()
+                    pcall(function() rps.Requests.ReturnToMenu:InvokeServer() end)
+                end)
+                task.spawn(function()
+                    TrinketBotServerhop(reason, false, false, true)
+                end)
+                return true
             end
 
             local function DoSafeServerhop(reason, skip_test_mode_check, skip_gate_escape)
@@ -14452,6 +14500,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     return
                 end
 
+                if check_critical_player() then return end
+
                 if not test_mode and checkPingAndHop() then
                     return
                 end
@@ -14967,13 +15017,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
 
                         if critical_distance > 0 and not critical_serverhop_sent and not stay_in_server then
-                            local other_player, distance = nearby_loot_bot_player(critical_distance)
-                            if other_player then
+                            if check_critical_player() then
                                 critical_serverhop_sent = true
-                                trinket_bot.path_running = false
-                                cancel_bot_movement()
-                                library:Notify(string.format("Critical distance: %s within %.0f studs - serverhopping", other_player.Name, distance))
-                                SafeServerhop(string.format("Player %s within %.0f studs", other_player.Name, distance))
                                 return
                             end
 
@@ -17624,6 +17669,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.path_executing = true
                 trinket_bot.stop_requested = false
                 trinket_bot.restore_needed = false
+                trinket_bot.critical_logout_requested = false
                 local ok, err = xpcall(function() RunTrinketPath(test_mode) end, debug.traceback)
                 trinket_bot.path_running = false
                 trinket_bot.safety_paused = false
@@ -18005,7 +18051,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Max = 1000,
                 Rounding = 0,
                 Compact = true,
-                Tooltip = "While running, instantly serverhop when a player enters this range (0 = no critical hop). Startup waits for a clear area; the minimum 60-stud loot safety pause still applies."
+                Tooltip = "While running, instantly serverhop when a player enters this range (0 = no critical hop). Critical range takes priority at startup and while paused; logout is requested immediately without waiting for a gate or danger to clear."
             })
 
             group_trinket_bot:AddSlider("MinPlayerCount", {

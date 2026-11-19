@@ -57,6 +57,7 @@ local function FindFirstChild(parent, name) return parent and parent[name] end
 local function FindFirstChildOfClass(parent, class) return parent and parent[class] end
 local shared, trinket_bot, active_tween_data, Options, Toggles
 local emergency_gate_requested, emergency_gate_in_progress, startup_moves, hop_count, restore_count
+local exit_events, menu_hangs, menu_fails, hop_success, hop_fails, ping_checks
 local utility = {Connection = function(_, event, callback) return event:Connect(callback) end, plain_webhook = function() end}
 local library = {Notify = function(_, message) notices[#notices + 1] = message end}
 local rs = {RenderStepped = signal(), Heartbeat = signal()}
@@ -98,7 +99,7 @@ local function step(count)
 end
 local cheat_client = {config = {blatant_mode = true}}
 local mem = {HasItem = function() return false end}
-local function checkPingAndHop() return false end
+local function checkPingAndHop() ping_checks += 1; return false end
 local function check_twenty_three_status() return true end
 local function restore_bot_state() restore_count += 1 end
 local function warn() end
@@ -106,7 +107,22 @@ local function tick() return clock end
 local ts, droppedTools = {}, {}
 local function track_connection(name, connection) trinket_bot.connections[name] = connection; return connection end
 local ws = {FindFirstChild = function() return nil end}
-local function SafeServerhop() hop_count += 1; task.wait() end
+local function SafeServerhop() error('Critical players must bypass the escape-and-wait routine') end
+local TrinketBotServerhop
+local rps = {Requests = {ReturnToMenu = {InvokeServer = function()
+    exit_events[#exit_events + 1] = {kind = 'menu', time = clock}
+    if menu_fails then error('Menu request failed') end
+    if menu_hangs then task.wait() end
+end}}}
+function utility:Serverhop()
+    hop_count += 1
+    exit_events[#exit_events + 1] = {kind = 'hop', time = clock}
+    if hop_fails then error('Server search failed') end
+    return hop_success
+end
+function plr:Kick()
+    exit_events[#exit_events + 1] = {kind = 'kick', time = clock}
+end
 local function get_proximity_distance() return Options.ProximityCheck.Value end
 local current_gate_section, player_encounters, proximity_warnings = 0, {}, {}
 local function reset()
@@ -120,6 +136,7 @@ local function reset()
     rs.RenderStepped, rs.Heartbeat = signal(), signal()
     emergency_gate_requested, emergency_gate_in_progress, startup_moves, hop_count, restore_count = nil, false, 0, 0, 0
     current_gate_section, player_encounters, proximity_warnings = 0, {}, {}
+    exit_events, menu_hangs, menu_fails, hop_success, hop_fails, ping_checks = {}, false, false, true, false, 0
 end
 local function addPlayer(x, name)
     local player = {Name = name or 'Nearby', UserId = #players + 1, Character = character(x)}
@@ -127,6 +144,13 @@ local function addPlayer(x, name)
     return player
 end
 -- @HELPERS@
+-- @FINISH_EMERGENCY@
+-- @HOP_COMPLETION@
+TrinketBotServerhop = function(reason, skip, force, urgent)
+    assert(urgent == true)
+    return run_bot_hop(function() complete_trinket_hop(urgent) end)
+end
+-- @EMERGENCY_LOGOUT@
 -- @STARTUP@
 -- @WRAPPER@
 -- @PROXIMITY@

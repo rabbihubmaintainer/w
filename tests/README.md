@@ -47,11 +47,19 @@ stop/unload/death/respawn, concurrent starts and hops, pickup guards, zero speed
 and Stay in Server mode. The startup harness ends before game-specific setup;
 these checks do not execute a full route in Roblox.
 
-The bot waits before starting if a living player is within the largest of 60 studs,
-Critical Distance, or Proximity Check. Normal movement and pickups use the largest
-of 60 studs or Critical Distance. After a pause, players must leave that radius
-plus 15 studs for two continuous seconds before movement resumes. Existing
-critical-distance hops and emergency gates still apply during a running route;
+Critical Distance takes priority at startup, during movement, and while paused.
+When enabled, it requests return to menu immediately and starts an independent
+server hop. It bypasses the clearance wait, notifications, detailed webhook logs,
+escape/gate attempts, and waiting for Danger to clear. A hanging menu request does
+not block the hop; a failed emergency hop disconnects rather than entering a
+wait/retry loop. Test mode and Stay in Server still prevent this automatic exit.
+The game/network controls the actual transition after the request is sent.
+
+Outside that emergency case, the bot waits before starting if a living player is
+within the largest of 60 studs, Critical Distance, or Proximity Check. Normal
+movement and pickups use the largest of 60 studs or Critical Distance. After a
+pause, players must leave that radius plus 15 studs for two continuous seconds
+before movement resumes. Emergency gates still apply outside critical range;
 escape movement can bypass the pause so it does not deadlock beside a threat.
 
 Verify in-game by starting with another player beside you, letting them leave and

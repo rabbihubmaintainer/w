@@ -48,6 +48,7 @@ test('startup pause stops cleanly on stop, unload, death, or respawn', function(
     end
 end)
 test('clearance needs two continuous seconds and a margin to avoid rapid toggling', function()
+    Options.CriticalDistance.Value = 0
     local player = addPlayer(59)
     local finished = false
     spawn(function() finished = wait_for_safe_loot_area() end)
@@ -77,6 +78,7 @@ test('movement waits when a player is near its destination', function()
     assert(not loot_bot_can_collect(Vector3.new(200, 0, 0)))
 end)
 test('movement pauses for a new nearby player and resumes the same tween after clearance', function()
+    Toggles.StayInServer = {Value = true}
     local result
     spawn(function() result = SmoothTeleport(Vector3.new(100, 0, 0)) end)
     step(2)
@@ -197,5 +199,72 @@ test('dead players do not trigger a critical hop', function()
     Options.ProximityCheck.Value = 300
     rs.Heartbeat:Fire()
     assert(emergency_gate_requested == nil)
+end)
+test('critical range at startup logs out before the ping check or clearance wait', function()
+    trinket_bot.path_running = false
+    addPlayer(60)
+    spawn(ExecutePath, false)
+    assert(startup_moves == 0 and ping_checks == 0 and #tweens == 0)
+    assert(#exit_events == 2 and exit_events[1].kind == 'menu' and exit_events[2].kind == 'hop')
+    assert(exit_events[1].time == 0 and exit_events[2].time == 0)
+    assert(not trinket_bot.path_running and not trinket_bot.safety_paused)
+end)
+test('entering critical range while startup is paused bypasses the two-second wait', function()
+    trinket_bot.path_running = false; Options.ProximityCheck.Value = 300
+    local player = addPlayer(100)
+    spawn(ExecutePath, false)
+    assert(trinket_bot.safety_paused and #exit_events == 0)
+    player.Character.HumanoidRootPart.Position = Vector3.new(59, 0, 0)
+    local detected_at = clock
+    step(1)
+    assert(#exit_events == 2 and exit_events[1].kind == 'menu')
+    assert(exit_events[1].time - detected_at <= 0.10001)
+    assert(startup_moves == 0 and not trinket_bot.safety_paused)
+end)
+test('a hanging menu request cannot delay the independent emergency hop', function()
+    menu_hangs = true
+    assert(emergency_logout('Critical player'))
+    assert(#jobs == 1)
+    assert(#exit_events == 2 and exit_events[1].kind == 'menu' and exit_events[2].kind == 'hop')
+    assert(exit_events[1].time == 0 and exit_events[2].time == 0)
+end)
+test('a failed menu request still attempts an emergency hop without waiting', function()
+    menu_fails = true
+    assert(emergency_logout('Critical player'))
+    assert(hop_count == 1 and exit_events[2].kind == 'hop' and exit_events[2].time == 0)
+end)
+test('an emergency server-search failure disconnects instead of waiting for Danger', function()
+    for _, thrown in ipairs({false, true}) do
+        reset()
+        hop_success, hop_fails = false, thrown
+        assert(emergency_logout('Critical player'))
+        assert(exit_events[3].kind == 'kick' and exit_events[3].time == 0)
+        assert(not trinket_bot.path_running)
+    end
+end)
+test('critical logout is idempotent and does not wait for a notification', function()
+    local original = library.Notify
+    library.Notify = function() error('Emergency logout must run before UI work') end
+    assert(emergency_logout('Critical player'))
+    assert(emergency_logout('Duplicate critical player'))
+    assert(#exit_events == 2 and hop_count == 1 and clock == 0)
+    library.Notify = original
+end)
+test('critical logout cancels an in-flight tween before requesting the menu', function()
+    spawn(function() SmoothTeleport(Vector3.new(300, 0, 0)) end)
+    assert(active_tween_data.tween ~= nil)
+    assert(emergency_logout('Critical player'))
+    assert(tweens[1].cancelled and exit_events[1].kind == 'menu' and exit_events[1].time == 0)
+    assert(active_tween_data.tween == nil)
+end)
+test('disabled critical range, test mode, and Stay in Server retain their protections', function()
+    for _, mode in ipairs({'disabled', 'test', 'stay'}) do
+        reset(); addPlayer(1)
+        if mode == 'disabled' then Options.CriticalDistance.Value = 0
+        elseif mode == 'test' then trinket_bot.test_mode = true
+        else Toggles.StayInServer = {Value = true} end
+        assert(not check_critical_player())
+        assert(#exit_events == 0 and trinket_bot.path_running)
+    end
 end)
 print(tostring(passed) .. ' loot bot safety checks passed')
