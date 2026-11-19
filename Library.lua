@@ -54,7 +54,8 @@ local Library = {
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     TweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-    NotifyTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    NotifyTweenInfo = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+    NotifyDuration = 3,
 
     Toggled = false,
     Unloaded = false,
@@ -376,7 +377,7 @@ local Templates = {
         Title = "No Title",
         Footer = "No Footer",
         Position = UDim2.fromOffset(6, 6),
-        Size = UDim2.fromOffset(1080, 760),
+        Size = UDim2.fromOffset(900, 600),
         SidebarWidth = 192,
         IconSize = UDim2.fromOffset(30, 30),
         AutoShow = true,
@@ -1161,9 +1162,7 @@ function Library:SetDPIScale(DPIScale: number)
     end
 
     Library:UpdateKeybindFrame()
-    for _, Notification in pairs(Library.Notifications) do
-        Notification:Resize()
-    end
+    if Library.RefreshNotifications then Library:RefreshNotifications() end
 end
 
 function Library:GiveSignal(Connection: RBXScriptConnection | RBXScriptSignal)
@@ -1568,15 +1567,21 @@ local NotificationArea
 local NotificationList
 do
     NotificationArea = New("Frame", {
+        Name = "Notifications",
         AnchorPoint = Vector2.new(1, 0),
         BackgroundTransparency = 1,
-        Position = UDim2.new(1, -6, 0, 6),
-        Size = UDim2.new(0, 300, 1, -6),
+        Position = UDim2.new(1, -16, 0, 16),
+        Size = UDim2.new(0, 300, 1, -32),
+        ClipsDescendants = true,
+        ZIndex = 20,
         Parent = ScreenGui,
+        -- This screen-space layout is calculated below. Never restore the initial
+        -- right-side position during a DPI change after SetNotifySide("Left").
+        DPIExclude = {Position = true, Size = true},
     })
     NotificationList = New("UIListLayout", {
         HorizontalAlignment = Enum.HorizontalAlignment.Right,
-        Padding = UDim.new(0, 6),
+        Padding = UDim.new(0, 8),
         Parent = NotificationArea,
     })
 end
@@ -5878,21 +5883,30 @@ function Library:SetFont(FontFace)
     self:UpdateColorsUsingRegistry()
 end
 
-function Library:SetNotifySide(Side: string)
-    Library.NotifySide = Side
-
-    if Side:lower() == "left" then
-        NotificationArea.AnchorPoint = Vector2.new(0, 0)
-        NotificationArea.Position = UDim2.fromOffset(6, 6)
-        NotificationList.HorizontalAlignment = Enum.HorizontalAlignment.Left
-    else
-        NotificationArea.AnchorPoint = Vector2.new(1, 0)
-        NotificationArea.Position = UDim2.new(1, -6, 0, 6)
-        NotificationList.HorizontalAlignment = Enum.HorizontalAlignment.Right
-    end
+function Library:RefreshNotifications()
+    if Library.Unloaded then return end
+    local Viewport = ScreenGui.AbsoluteSize
+    local Margin = math.min(16, math.min(Viewport.X, Viewport.Y) * 0.04)
+    local Width = math.max(1, math.min(300 * Library.DPIScale, Viewport.X - 2 * Margin))
+    local IsLeft = Library.NotifySide == "Left"
+    NotificationArea.AnchorPoint = Vector2.new(IsLeft and 0 or 1, 0)
+    NotificationArea.Position = UDim2.new(IsLeft and 0 or 1, IsLeft and Margin or -Margin, 0, Margin)
+    NotificationArea.Size = UDim2.new(0, Width, 1, -2 * Margin)
+    NotificationList.HorizontalAlignment = IsLeft and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Right
+    for _, Notification in pairs(Library.Notifications) do Notification:Resize() end
 end
 
+function Library:SetNotifySide(Side: string)
+    Library.NotifySide = tostring(Side):lower() == "left" and "Left" or "Right"
+    Library:RefreshNotifications()
+end
+
+Library:GiveSignal(ScreenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    Library:RefreshNotifications()
+end))
+
 function Library:Notify(...)
+    if Library.Unloaded then return end
     if shared and shared.cheat_client and shared.cheat_client.config and shared.cheat_client.config.notifications == false then
         return
     end
@@ -5900,248 +5914,147 @@ function Library:Notify(...)
         return
     end
 
-    local Data = {}
+    local Data = {Destroyed = false}
     local Info = select(1, ...)
-
     if typeof(Info) == "table" then
-        Data.Title = tostring(Info.Title)
-        Data.Description = tostring(Info.Description)
-        Data.Time = Info.Time or 5
+        Data.Title = Info.Title ~= nil and tostring(Info.Title) or nil
+        Data.Description = Info.Description ~= nil and tostring(Info.Description) or nil
+        Data.Time = Info.Time or Library.NotifyDuration
         Data.SoundId = Info.SoundId
-        Data.Steps = Info.Steps
+        Data.Steps = tonumber(Info.Steps)
         Data.Persist = Info.Persist
     else
         Data.Description = tostring(Info)
-        Data.Time = select(2, ...) or 5
+        Data.Time = select(2, ...) or Library.NotifyDuration
         Data.SoundId = select(3, ...)
     end
-    Data.Destroyed = false
+    if Data.Steps and Data.Steps <= 0 then Data.Steps = nil end
+    local InstanceTime = typeof(Data.Time) == "Instance"
+    if not InstanceTime then Data.Time = math.max(0.2, tonumber(Data.Time) or Library.NotifyDuration) end
+    Library:RefreshNotifications()
 
-    local DeletedInstance = false
-    local DeleteConnection = nil
-    if typeof(Data.Time) == "Instance" then
-        DeleteConnection = Data.Time.Destroying:Connect(function()
-            DeletedInstance = true
-
-            DeleteConnection:Disconnect()
-            DeleteConnection = nil
-        end)
-    end
-
-    local FakeBackground = New("Frame", {
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Size = UDim2.fromScale(1, 0),
-        Visible = false,
-        Parent = NotificationArea,
-
-        DPIExclude = {
-            Size = true,
-        },
+    -- Explicit heights avoid a circular AutomaticSize relationship between the
+    -- list slot, its outline, and the content. The card never slides off-screen.
+    local Slot = New("Frame", {
+        Name = "NotificationSlot", BackgroundTransparency = 1,
+        Size = UDim2.fromOffset(0, 0), ZIndex = 20, Parent = NotificationArea,
+        DPIExclude = {Size = true},
     })
-
-    local Background = Library:MakeOutline(FakeBackground, Library.CornerRadius, 5)
-    Background.AutomaticSize = Enum.AutomaticSize.Y
-    Background.Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -6, 0, -2) or UDim2.new(1, 6, 0, -2)
-    Background.Size = UDim2.fromScale(1, 0)
-    Library:UpdateDPI(Background, {
-        Position = false,
-        Size = false,
+    local Card = New("CanvasGroup", {
+        Name = "NotificationCard", BackgroundColor3 = "MainColor", BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1), GroupTransparency = 1, ZIndex = 20, Parent = Slot,
     })
-
-    local Holder = New("Frame", {
-        BackgroundColor3 = "MainColor",
-        Position = UDim2.fromOffset(2, 2),
-        Size = UDim2.new(1, -4, 1, -4),
-        Parent = Background,
+    New("UICorner", {CornerRadius = UDim.new(0, 10), Parent = Card})
+    New("UIStroke", {Color = "OutlineColor", Thickness = 1, Parent = Card})
+    local Title = New("TextLabel", {
+        Name = "NotificationTitle", BackgroundTransparency = 1,
+        Text = Data.Title or "", Visible = Data.Title ~= nil, TextSize = 14,
+        FontFace = "HeadingFont", TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 21, Parent = Card,
+        DPIExclude = {Position = true, Size = true},
     })
-    New("UICorner", {
-        CornerRadius = UDim.new(0, math.max(Library.CornerRadius - 1, 0)),
-        Parent = Holder,
+    local Desc = New("TextLabel", {
+        Name = "NotificationDescription", BackgroundTransparency = 1,
+        Text = Data.Description or "", Visible = Data.Description ~= nil, TextSize = 14,
+        TextColor3 = "TextSecondary", TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 21, Parent = Card,
+        DPIExclude = {Position = true, Size = true},
     })
-    New("UIListLayout", {
-        Padding = UDim.new(0, 4),
-        Parent = Holder,
+    local TimerBar = New("Frame", {
+        Name = "NotificationTimer", BackgroundColor3 = "OutlineColor",
+        Visible = (not Data.Persist and not InstanceTime) or Data.Steps ~= nil,
+        ZIndex = 21, Parent = Card, DPIExclude = {Position = true, Size = true},
     })
-    New("UIPadding", {
-        PaddingBottom = UDim.new(0, 8),
-        PaddingLeft = UDim.new(0, 8),
-        PaddingRight = UDim.new(0, 8),
-        PaddingTop = UDim.new(0, 8),
-        Parent = Holder,
+    local TimerFill = New("Frame", {
+        BackgroundColor3 = "AccentColor", Size = UDim2.fromScale(InstanceTime and 0 or 1, 1),
+        ZIndex = 22, Parent = TimerBar,
     })
-
-    local Title
-    local Desc
-    local TitleX = 0
-    local DescX = 0
-
-    local TimerFill
-
-    if Data.Title then
-        Title = New("TextLabel", {
-            BackgroundTransparency = 1,
-            Text = Data.Title,
-            TextSize = 15,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextWrapped = true,
-            Parent = Holder,
-
-            DPIExclude = {
-                Size = true,
-            },
-        })
-    end
-
-    if Data.Description then
-        Desc = New("TextLabel", {
-            BackgroundTransparency = 1,
-            Text = Data.Description,
-            TextSize = 15,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextWrapped = true,
-            Parent = Holder,
-
-            DPIExclude = {
-                Size = true,
-            },
-        })
-    end
+    Data.Frame, Data.Card = Slot, Card
+    Data.TitleLabel, Data.DescriptionLabel = Title, Desc
+    local DeleteConnection, FadeTween, TimerTween
 
     function Data:Resize()
-        if Title then
-            local X, Y = Library:GetTextBounds(
-                Title.Text,
-                Title.FontFace,
-                Title.TextSize,
-                NotificationArea.AbsoluteSize.X - (24 * Library.DPIScale)
-            )
-            Title.Size = UDim2.fromOffset(math.ceil(X), Y)
-            TitleX = X
+        if Data.Destroyed then return end
+        local Scale = Library.DPIScale
+        local Padding = 12 * Scale
+        local Width = NotificationArea.Size.X.Offset
+        local TextWidth = math.max(1, Width - Padding * 2)
+        local Y = Padding
+        for _, Label in ipairs({Title, Desc}) do
+            if Label.Visible then
+                local _, Height = Library:GetTextBounds(Label.Text, Label.FontFace, Label.TextSize, TextWidth)
+                Height = math.ceil(Height) + 2 * Scale
+                Label.Position = UDim2.fromOffset(Padding, Y)
+                Label.Size = UDim2.fromOffset(TextWidth, Height)
+                Y += Height + 4 * Scale
+            end
         end
-
-        if Desc then
-            local X, Y = Library:GetTextBounds(
-                Desc.Text,
-                Desc.FontFace,
-                Desc.TextSize,
-                NotificationArea.AbsoluteSize.X - (24 * Library.DPIScale)
-            )
-            Desc.Size = UDim2.fromOffset(math.ceil(X), Y)
-            DescX = X
+        if TimerBar.Visible then
+            TimerBar.Position = UDim2.fromOffset(Padding, Y + 2 * Scale)
+            TimerBar.Size = UDim2.fromOffset(TextWidth, 2 * Scale)
+            Y += 8 * Scale
         end
-
-        FakeBackground.Size = UDim2.fromOffset((TitleX > DescX and TitleX or DescX) + (24 * Library.DPIScale), 0)
+        Slot.Size = UDim2.new(1, 0, 0, math.ceil(Y + Padding - 4 * Scale))
     end
 
     function Data:ChangeTitle(NewText)
-        if Title then
-            Data.Title = tostring(NewText)
-            Title.Text = Data.Title
-            Data:Resize()
-        end
+        if Data.Destroyed then return end
+        Data.Title = tostring(NewText)
+        Title.Text, Title.Visible = Data.Title, true
+        Data:Resize()
     end
-
     function Data:ChangeDescription(NewText)
-        if Desc then
-            Data.Description = tostring(NewText)
-            Desc.Text = Data.Description
-            Data:Resize()
-        end
+        if Data.Destroyed then return end
+        Data.Description = tostring(NewText)
+        Desc.Text, Desc.Visible = Data.Description, true
+        Data:Resize()
     end
-
     function Data:ChangeStep(NewStep)
-        if TimerFill and Data.Steps then
-            NewStep = math.clamp(NewStep or 0, 0, Data.Steps)
-            TimerFill.Size = UDim2.fromScale(NewStep / Data.Steps, 1)
+        if not Data.Destroyed and Data.Steps then
+            TimerFill.Size = UDim2.fromScale(math.clamp(tonumber(NewStep) or 0, 0, Data.Steps) / Data.Steps, 1)
         end
     end
 
-    function Data:Destroy()
+    local function Cleanup()
         Data.Destroyed = true
-        if DeleteConnection then
-            DeleteConnection:Disconnect()
-        end
-
-        TweenService
-            :Create(Background, Library.NotifyTweenInfo, {
-                Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -6, 0, -2) or UDim2.new(1, 6, 0, -2),
-            })
-            :Play()
+        Library.Notifications[Slot] = nil
+        if DeleteConnection then DeleteConnection:Disconnect(); DeleteConnection = nil end
+        if FadeTween then FadeTween:Cancel() end
+        if TimerTween then TimerTween:Cancel() end
+    end
+    Slot.Destroying:Connect(Cleanup)
+    function Data:Destroy()
+        if Data.Destroyed then return end
+        Cleanup()
+        if Library.Unloaded then Slot:Destroy(); return end
+        FadeTween = TweenService:Create(Card, Library.NotifyTweenInfo, {GroupTransparency = 1})
+        FadeTween:Play()
         task.delay(Library.NotifyTweenInfo.Time, function()
-            Library.Notifications[FakeBackground] = nil
-            FakeBackground:Destroy()
+            if Slot.Parent then Slot:Destroy() end
         end)
     end
 
+    Library.Notifications[Slot] = Data
     Data:Resize()
-
-    local TimerHolder = New("Frame", {
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 7),
-        Visible = (Data.Persist ~= true and typeof(Data.Time) ~= "Instance") or typeof(Data.Steps) == "number",
-        Parent = Holder,
-    })
-    local TimerBar = New("Frame", {
-        BackgroundColor3 = "BackgroundColor",
-        BorderColor3 = "OutlineColor",
-        BorderSizePixel = 1,
-        Position = UDim2.fromOffset(0, 3),
-        Size = UDim2.new(1, 0, 0, 2),
-        Parent = TimerHolder,
-    })
-    TimerFill = New("Frame", {
-        BackgroundColor3 = "AccentColor",
-        Size = UDim2.fromScale(1, 1),
-        Parent = TimerBar,
-    })
-
-    if typeof(Data.Time) == "Instance" then
-        TimerFill.Size = UDim2.fromScale(0, 1)
-    end
+    FadeTween = TweenService:Create(Card, Library.NotifyTweenInfo, {GroupTransparency = 0})
+    FadeTween:Play()
     if Data.SoundId then
-        local SoundId = Data.SoundId
-        if typeof(SoundId) == "number" then
-            SoundId = string.format("rbxassetid://%d", SoundId)
-        end
-
         New("Sound", {
-            SoundId = SoundId,
-            Volume = 3,
-            PlayOnRemove = true,
-            Parent = SoundService,
+            SoundId = typeof(Data.SoundId) == "number" and string.format("rbxassetid://%d", Data.SoundId) or Data.SoundId,
+            Volume = 3, PlayOnRemove = true, Parent = SoundService,
         }):Destroy()
     end
-
-    Library.Notifications[FakeBackground] = Data
-
-    FakeBackground.Visible = true
-    TweenService:Create(Background, Library.NotifyTweenInfo, {
-        Position = UDim2.fromOffset(-2, -2),
-    }):Play()
-
-    task.delay(Library.NotifyTweenInfo.Time, function()
-        if Data.Persist then
-            return
-        elseif typeof(Data.Time) == "Instance" then
-            repeat
-                task.wait()
-            until DeletedInstance or Data.Destroyed
+    if not Data.Persist then
+        if InstanceTime then
+            DeleteConnection = Data.Time.Destroying:Connect(function() Data:Destroy() end)
         else
-            local tweenTime = tonumber(Data.Time) or 5 -- Default to 5 seconds if invalid
-            TweenService
-                :Create(TimerFill, TweenInfo.new(tweenTime, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut), {
-                    Size = UDim2.fromScale(0, 1),
-                })
-                :Play()
-            task.wait(tweenTime)
+            TimerTween = TweenService:Create(TimerFill, TweenInfo.new(Data.Time, Enum.EasingStyle.Linear), {Size = UDim2.fromScale(0, 1)})
+            TimerTween:Play()
+            task.delay(Data.Time, function()
+                if not Library.Unloaded then Data:Destroy() end
+            end)
         end
-
-        if not Data.Destroyed then
-            Data:Destroy()
-        end
-    end)
-
+    end
     return Data
 end
 
@@ -7488,7 +7401,7 @@ function Library:CreateWindow(WindowInfo)
         local Camera = workspace.CurrentCamera
         if not Camera or Library.Unloaded then return end
         local Viewport = Camera.ViewportSize
-        local Scale = math.clamp(math.min(Viewport.X / 1440, Viewport.Y / 900), 1, 1.35)
+        local Scale = math.clamp(math.min(Viewport.X / 1600, Viewport.Y / 1000), 1, 1.15)
         if math.abs(Library.DPIScale - Scale) > 0.001 then Library:SetDPIScale(Scale * 100) end
         local Margin = math.min(16, math.min(Viewport.X, Viewport.Y) * 0.04)
         local MaxWidth, MaxHeight = math.max(1, Viewport.X - 2 * Margin), math.max(1, Viewport.Y - 2 * Margin)
@@ -7498,6 +7411,7 @@ function Library:CreateWindow(WindowInfo)
         MainFrame.Size = UDim2.fromOffset(Width, Height)
         MainFrame.Position = UDim2.fromOffset((Viewport.X - Width) / 2, (Viewport.Y - Height) / 2)
         self:Reflow()
+        Library:RefreshNotifications()
     end
 
     Window.Frame = MainFrame

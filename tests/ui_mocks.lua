@@ -104,7 +104,8 @@ local events = {InputBegan = true, InputChanged = true, InputEnded = true, Mouse
     FocusLost = true, SelectionGained = true, SelectionLost = true, DescendantRemoving = true, Destroying = true,
     ChildAdded = true, ChildRemoved = true, PlayerAdded = true, PlayerRemoving = true, Changed = true,
     RenderStepped = true, Heartbeat = true, WindowFocused = true, WindowFocusReleased = true, TouchPinch = true}
-local gui = {Frame = true, TextLabel = true, TextButton = true, TextBox = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true}
+local workspace
+local gui = {Frame = true, CanvasGroup = true, TextLabel = true, TextButton = true, TextBox = true, ImageLabel = true, ImageButton = true, ScrollingFrame = true, ViewportFrame = true}
 local function childOf(parent, kind)
     if not parent then return nil end
     for _, child in ipairs(parent._children) do if child.ClassName == kind then return child end end
@@ -131,7 +132,7 @@ local function content(node)
     return horizontal and Vector2.new(along, across) or Vector2.new(across, along)
 end
 local function absoluteSize(node)
-    if node.ClassName == "ScreenGui" then return Vector2.new(1440, 1000) end
+    if node.ClassName == "ScreenGui" then return workspace and workspace.CurrentCamera.ViewportSize or Vector2.new(1440, 1000) end
     if not gui[node.ClassName] then return Vector2.zero end
     if rawget(node, '_measuring') then return rawget(node, '_lastSize') or Vector2.zero end
     rawset(node, '_measuring', true)
@@ -314,7 +315,7 @@ function services.UserInputService:GetFocusedTextBox() return nil end
 services.UserInputService.MouseEnabled = true
 services.Teams = Instance.new("Teams")
 services.SoundService = Instance.new("SoundService")
-local workspace = Instance.new('Workspace')
+workspace = Instance.new('Workspace')
 workspace.CurrentCamera = Instance.new('Camera')
 workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
 local game = {GetService = function(_, name) return assert(services[name], name) end}

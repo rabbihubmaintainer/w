@@ -60,7 +60,7 @@ return function(ctx)
     local window = library:CreateWindow({
         Title = "rabbihub.cc",
         Font = "BuilderSans",
-        Size = UDim2.fromOffset(1080, 760),
+        Size = UDim2.fromOffset(900, 600),
         SidebarWidth = 192,
         CornerRadius = 10,
         ShowCustomCursor = false,

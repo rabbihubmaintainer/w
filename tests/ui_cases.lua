@@ -346,6 +346,123 @@ test('world overlay labels hide while the menu is open and resume when it closes
     end
 end)
 
+test('default window is compact at desktop and laptop resolutions', function()
+    workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
+    equal(window.Frame.Size.X.Offset, 900)
+    equal(window.Frame.Size.Y.Offset, 600)
+    workspace.CurrentCamera.ViewportSize = Vector2.new(1920, 1080)
+    assert(window.Frame.Size.X.Offset <= 1035 and window.Frame.Size.Y.Offset <= 690)
+    workspace.CurrentCamera.ViewportSize = Vector2.new(1280, 720)
+    assert(window.Frame.Size.X.Offset <= 900 and window.Frame.Size.Y.Offset <= 600)
+    equal(compactProximity.Label.TextSize, 15)
+    workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
+end)
+local function removeNotification(notification)
+    notification:Destroy()
+    notification.Frame:Destroy()
+end
+local function inside(node, container)
+    local a, b = node.AbsolutePosition, container.AbsolutePosition
+    local size, bounds = node.AbsoluteSize, container.AbsoluteSize
+    assert(a.X >= b.X and a.Y >= b.Y, node.Name .. ' starts outside ' .. container.Name)
+    assert(a.X + size.X <= b.X + bounds.X + 1, node.Name .. ' extends beyond right edge')
+    assert(a.Y + size.Y <= b.Y + bounds.Y + 1, node.Name .. ' extends beyond bottom edge')
+end
+test('notification side survives repeated DPI changes without moving cards off-screen', function()
+    for _, side in ipairs({'Left', 'Right'}) do
+        library:SetNotifySide(side)
+        local notification = library:Notify({Title = 'Settings saved', Description = 'Your changes have been saved.'})
+        for _, dpi in ipairs({115, 100, 150, 75, 100}) do
+            library:SetDPIScale(dpi)
+            local area = notification.Frame.Parent
+            equal(area.AnchorPoint.X, side == 'Left' and 0 or 1)
+            equal(area.Position.X.Scale, side == 'Left' and 0 or 1)
+            inside(notification.Card, library.ScreenGui)
+            inside(notification.TitleLabel, notification.Card)
+            inside(notification.DescriptionLabel, notification.Card)
+            equal(notification.Card.GroupTransparency, 0)
+        end
+        removeNotification(notification)
+    end
+    window:FitToViewport()
+end)
+test('notifications wrap and remain readable on narrow screens and camera resizes', function()
+    local notification = library:Notify({Title = 'Notification', Description = string.rep('Long notification text ', 12)})
+    for _, side in ipairs({'Right', 'Left'}) do
+        library:SetNotifySide(side)
+        for _, resolution in ipairs({{3840, 2160}, {1280, 720}, {360, 640}, {280, 640}}) do
+            workspace.CurrentCamera.ViewportSize = Vector2.new(resolution[1], resolution[2])
+            inside(notification.Card, library.ScreenGui)
+            inside(notification.DescriptionLabel, notification.Card)
+            assert(notification.DescriptionLabel.AbsoluteSize.Y > notification.DescriptionLabel.TextSize)
+        end
+    end
+    removeNotification(notification)
+    workspace.CurrentCamera.ViewportSize = Vector2.new(1440, 1000)
+end)
+test('notification text changes resize cards and stacked cards do not overlap', function()
+    local first = library:Notify('First notification')
+    local second = library:Notify('Second notification')
+    local original = first.Frame.AbsoluteSize.Y
+    first:ChangeTitle('Saved settings')
+    first:ChangeDescription(string.rep('Additional information ', 6))
+    assert(first.Frame.AbsoluteSize.Y > original)
+    inside(first.TitleLabel, first.Card)
+    inside(first.DescriptionLabel, first.Card)
+    assert(second.Frame.AbsolutePosition.Y >= first.Frame.AbsolutePosition.Y + first.Frame.AbsoluteSize.Y + 6)
+    assert(first.Frame.Parent.ClipsDescendants)
+    removeNotification(first); removeNotification(second)
+end)
+test('notifications expire after three seconds and dispose after their short fade', function()
+    local previous, scheduled = task.delay, {}
+    task.delay = function(seconds, callback) scheduled[#scheduled + 1] = {seconds, callback} end
+    local notification = library:Notify({Description = 'Saved'})
+    equal(notification.Title, nil)
+    equal(notification.TitleLabel.Visible, false)
+    equal(notification.Time, 3)
+    equal(scheduled[1][1], 3)
+    scheduled[1][2]()
+    assert(notification.Destroyed)
+    equal(library.Notifications[notification.Frame], nil)
+    equal(notification.Card.GroupTransparency, 1)
+    equal(scheduled[2][1], 0.15)
+    scheduled[2][2]()
+    equal(notification.Frame.Parent, nil)
+    notification:Destroy(); notification:ChangeDescription('Already dismissed')
+    equal(#scheduled, 2)
+    task.delay = previous
+end)
+test('explicit durations and persistent progress notifications retain their APIs', function()
+    local previous, scheduled = task.delay, {}
+    task.delay = function(seconds, callback) scheduled[#scheduled + 1] = {seconds, callback} end
+    local timed = library:Notify('Custom duration', 1.5)
+    equal(scheduled[1][1], 1.5)
+    removeNotification(timed)
+    local count = #scheduled
+    local persistent = library:Notify({Title = 'Progress', Persist = true, Steps = 4})
+    equal(#scheduled, count)
+    persistent:ChangeStep(2)
+    equal(find(persistent.Card, 'NotificationTimer'):GetChildren()[1].Size.X.Scale, 0.5)
+    persistent:ChangeStep(9)
+    equal(find(persistent.Card, 'NotificationTimer'):GetChildren()[1].Size.X.Scale, 1)
+    removeNotification(persistent)
+    local invalid = library:Notify({Description = 'Invalid duration', Time = 'invalid', Steps = 0})
+    equal(invalid.Time, 3)
+    equal(invalid.Steps, nil)
+    removeNotification(invalid)
+    task.delay = previous
+end)
+test('instance-bound notifications dismiss on deletion and release their listener', function()
+    local owner = Instance.new('Frame')
+    local notification = library:Notify({Description = 'Working', Time = owner})
+    local connection = owner.Destroying.connections[1]
+    assert(connection.Connected)
+    owner:Destroy()
+    assert(notification.Destroyed)
+    equal(connection.Connected, false)
+    notification.Frame:Destroy()
+end)
+
 local main = library.ScreenGui:FindFirstChild('Main')
 themeManager:ApplyTheme('Catppuccin')
 window:FitToViewport()
@@ -370,8 +487,14 @@ local function snapshot(node, parentVisible)
 end
 print('UI_SNAPSHOT ' .. json(snapshot(main, true)))
 test('library unload disconnects registered focus signals', function()
+    local owner = Instance.new('Frame')
+    local notification = library:Notify({Description = 'Working', Time = owner})
+    local connection = owner.Destroying.connections[1]
     library:Unload()
     assert(library.Unloaded)
+    assert(notification.Destroyed)
+    equal(connection.Connected, false)
+    equal(next(library.Notifications), nil)
     for _, connection in ipairs(library.Signals) do equal(connection.Connected, false) end
 end)
 print(tostring(passed) .. ' UI and manager checks passed')

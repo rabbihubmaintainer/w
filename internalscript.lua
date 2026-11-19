@@ -3312,7 +3312,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "MODERATOR detected",
                             Description = player.Name.." ["..player.UserId.."] is a Moderator",
-                            Time = 25
+                            Time = 5
                         })
                         utility:sound("rbxassetid://1693890393", 4)
                     end
@@ -3333,7 +3333,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             library:Notify({
                                 Title = "🛑 MODERATOR DETECTED",
                                 Description = player.Name.." is a Moderator",
-                                Time = 25
+                                Time = 5
                             })
                         end
                     end
@@ -3379,7 +3379,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 library:Notify({
                                     Title = "🛑 MODERATOR DETECTED",
                                     Description = cheat_client:get_name(player).." ["..player.Name.."] has Lich name ["..firstName.."]",
-                                    Time = 25
+                                    Time = 5
                                 })
                             end
                         elseif has_spec_name then
@@ -3388,7 +3388,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 library:Notify({
                                     Title = "⚠️ WARNING",
                                     Description = cheat_client:get_name(player).." ["..player.Name.."] has a special name '"..firstName.."'",
-                                    Time = 25
+                                    Time = 5
                                 })
                             end
                         end
@@ -3415,7 +3415,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "🛑 MODERATOR DETECTED",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] is in Rogue Lineage group, [ "..player_rank.." ]",
-                            Time = 25
+                            Time = 5
                         })
                     end
                 elseif is_lich_mod then
@@ -3424,7 +3424,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "🛑 MODERATOR DETECTED",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has Lich name ["..firstName.."]",
-                            Time = 25
+                            Time = 5
                         })
                     end
                 elseif success2 and isInGroup2 then
@@ -3434,7 +3434,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "🛑 POSSIBLE MODERATOR",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] is in SPEC group (281365), [ "..player_rank.." ]",
-                            Time = 25
+                            Time = 5
                         })
                     end
                 elseif has_spec_name then
@@ -3443,7 +3443,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "⚠️ WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has a special name '"..firstName.."'",
-                            Time = 25
+                            Time = 5
                         })
                     end
                 elseif cheat_client and cheat_client.mod_list and table.find(cheat_client.mod_list, player.UserId) then
@@ -3452,7 +3452,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "🛑 MODERATOR DETECTED",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] is a Moderator",
-                            Time = 25
+                            Time = 5
                         })
                     end
                 else
@@ -3481,7 +3481,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "⚠️ FAGGOT DETECTED WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has Verdien but is not a druid",
-                            Time = 25
+                            Time = 5
                         })
                     end
                     return
@@ -3496,7 +3496,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "⚠️ FAGGOT DETECTED WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] can teleport to you with "..(has_flower_god and "Flying Flower God" or "Flying Mushroom God"),
-                            Time = 25
+                            Time = 5
                         })
                     end
                 end
@@ -3517,7 +3517,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify({
                             Title = "⚠️ FAGGOT DETECTED WARNING",
                             Description = cheat_client:get_name(player).." ["..player.Name.."] has spec skills: "..skills_list,
-                            Time = 25
+                            Time = 5
                         })
                     end
                 end
@@ -7316,7 +7316,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             NotifySide = "Left",
             Footer = "",
             Font = "BuilderSans",
-            Size = UDim2.fromOffset(1080, 760),
+            Size = UDim2.fromOffset(900, 600),
             SidebarWidth = 192,
             CornerRadius = 10,
             ShowCustomCursor = false,
@@ -14272,7 +14272,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             library:Notify({
                                 Title = string.format("⚠️ 23 MODE ALERT [%d/%d]", i, alert_count),
                                 Description = reason,
-                                Time = 10
+                                Time = 5
                             })
                         end
 
@@ -25591,7 +25591,7 @@ end
                     library:Notify({
                         Title = "⚠️ ILLUSIONIST DETECTED",
                         Description = cheat_client:get_name(player).." ["..player.Name.."] is an illusionist",
-                        Time = 10
+                        Time = 5
                     })
                 end
 
@@ -26529,7 +26529,7 @@ end
                                 artifact_list,
                                 area_text
                             )
-                            library:Notify(msg, 10)
+                            library:Notify(msg, 5)
 
                        
                             pcall(function()

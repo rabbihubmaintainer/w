@@ -23,8 +23,9 @@ uses the same window and theme defaults.
   variants remain consistent when switching themes.
 - Content changes to a single column when the available content width is below
   560 px. The normal left/right panel arrangement returns when space is available.
-- The window follows camera/viewport size changes, stays within the screen,
-  respects manual resize preferences, and increases its scale on larger displays.
+- The default window is a compact 900×600 px, with automatic display scaling
+  capped at 115%. It follows camera/viewport size changes, stays within the screen,
+  and respects manual resize preferences.
   Automatic layout does not shrink the base font on small screens; content reflows
   and scrolls instead. Camera replacement and repeated DPI changes are handled.
 - Theme files now retain the complete color-role set and the selected typeface.
@@ -36,6 +37,11 @@ uses the same window and theme defaults.
   to an image label created outside the library.
 - World ESP text and the aim FOV circle are hidden while the menu is open so they
   do not draw above its panels. Closing the menu restores their normal rendering.
+- Notifications stay on their selected side across DPI changes. Cards use measured
+  text heights, wrap within the viewport, and fade in place instead of sliding
+  off-screen. Ordinary notifications last 3 seconds with a 150 ms fade; longer
+  detection alerts in the main script last 5 seconds. Explicit durations,
+  persistent messages, step progress, and instance-bound lifetimes remain supported.
 
 ## Verification
 
@@ -52,7 +58,8 @@ They cover theme selection and persistence, custom-font setup/fallback, measured
 text/action contrast, focus behavior, control callbacks, dropdown sizing,
 configuration round trips, the reported compact-slider text regression, panel
 header clearance, long labels, viewport sizes from 360×640 to 4K, repeated DPI
-changes, camera replacement, overlay occlusion, and unload.
+changes, camera replacement, overlay occlusion, compact window defaults, notification
+positioning/wrapping/expiry, persistent and instance-bound notifications, and unload.
 The original 26 unload regressions also remain in place.
 
 API doubles and their approximate layout snapshots do not replace Roblox testing.
