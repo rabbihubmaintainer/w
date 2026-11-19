@@ -1,6 +1,9 @@
 local clock = 0
 local os = {clock = function() return clock end}
 local jobs, tweens, notices = {}, {}, {}
+local simulate_gravity = false
+local bot_cleanup
+local loot_items, pickups, collected, visited_positions = {}, {}, {}, {}
 local function signal()
     local event = {connections = {}}
     function event:Connect(callback)
@@ -34,6 +37,22 @@ local TweenInfo = {new = function(time) return {Time = time} end}
 local function LPH_NO_VIRTUALIZE(fn) return fn end
 local function node(name, class)
     local result = {Name = name, ClassName = class, Parent = true}
+    if class == 'Part' then
+        local position, frame = Vector3.new(), CFrame.new(Vector3.new())
+        setmetatable(result, {
+            __index = function(_, key)
+                if key == 'Position' then return position end
+                if key == 'CFrame' then return frame end
+            end,
+            __newindex = function(self, key, value)
+                if key == 'Position' then position, frame = value, CFrame.new(value)
+                elseif key == 'CFrame' then frame, position = value, value.Position
+                else rawset(self, key, value) end
+            end,
+        })
+        result.CanCollide, result.Anchored = true, false
+        result.Velocity, result.AssemblyLinearVelocity, result.AssemblyAngularVelocity = Vector3.new(), Vector3.new(), Vector3.new()
+    end
     function result:IsA(kind) return self.ClassName == kind or (self.ClassName == 'Part' and kind == 'BasePart') end
     function result:GetDescendants() return self.HumanoidRootPart and {self.HumanoidRootPart} or {} end
     return result
@@ -61,7 +80,7 @@ local exit_events, menu_hangs, menu_fails, hop_success, hop_fails, ping_checks
 local utility = {Connection = function(_, event, callback) return event:Connect(callback) end, plain_webhook = function() end}
 local library = {Notify = function(_, message) notices[#notices + 1] = message end}
 local rs = {RenderStepped = signal(), Heartbeat = signal()}
-local lifecycle = {RememberHumanoidState = function() end, Remember = function() end}
+local lifecycle = {RememberHumanoidState = function() end, Remember = function() end, AddCleanup = function(_, _, callback) bot_cleanup = callback end}
 function lifecycle:CreateTween(_, root, info, properties)
     local tween = {Completed = signal(), time = info.Time, elapsed = 0, playing = false, pauses = 0, cancelled = false}
     function tween:Play() self.playing = true end
@@ -78,6 +97,12 @@ end
 local function step(count)
     for _ = 1, count or 1 do
         clock += 0.1
+        local root = plr.Character and plr.Character.HumanoidRootPart
+        if simulate_gravity and root and not root.Anchored then
+            root.Position = Vector3.new(root.Position.X, root.Position.Y - 1, root.Position.Z)
+            root.AssemblyLinearVelocity = Vector3.new(0, -10, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 1, 0)
+        end
         rs.RenderStepped:Fire()
         for _, tween in ipairs(tweens) do
             if tween.playing then
@@ -97,7 +122,22 @@ local function step(count)
         end
     end
 end
-local cheat_client = {config = {blatant_mode = true}}
+local cheat_client = {config = {blatant_mode = true}, trinket_colors = {
+    common = {Color = 'common'}, rare = {Color = 'rare'}, mythic = {Color = 'mythic'},
+    artifact = {Color = 'artifact'}, event = {Color = 'event'},
+}}
+function cheat_client:identify_trinket() return 'Trinket', 'common' end
+local function already_visited_position(position)
+    for _, visited in ipairs(visited_positions) do if (visited - position).Magnitude < 5 then return true end end
+    return false
+end
+local function queue_pending_pickup() end
+local function mark_trinket_collected(id) collected[id] = true end
+local function fireclickdetector(detector)
+    local position = plr.Character.HumanoidRootPart.Position
+    pickups[#pickups + 1] = {x = position.X, y = position.Y, target = detector.object.Position}
+    detector.object.Parent = nil
+end
 local mem = {HasItem = function() return false end}
 local function checkPingAndHop() ping_checks += 1; return false end
 local function check_twenty_three_status() return true end
@@ -106,7 +146,14 @@ local function warn() end
 local function tick() return clock end
 local ts, droppedTools = {}, {}
 local function track_connection(name, connection) trinket_bot.connections[name] = connection; return connection end
-local ws = {FindFirstChild = function() return nil end}
+local ws = {FindFirstChild = function() return nil end, ChildAdded = signal(), GetChildren = function() return loot_items end}
+local function addLoot(x, y, id)
+    local item = node('Part', 'Part'); item.Position = Vector3.new(x, y, 0)
+    item.ID = node('ID', 'StringValue'); item.ID.Value = id
+    item.ClickDetector = {object = item}
+    loot_items[#loot_items + 1] = item
+    return item
+end
 local function SafeServerhop() error('Critical players must bypass the escape-and-wait routine') end
 local TrinketBotServerhop
 local rps = {Requests = {ReturnToMenu = {InvokeServer = function()
@@ -127,9 +174,12 @@ local function get_proximity_distance() return Options.ProximityCheck.Value end
 local current_gate_section, player_encounters, proximity_warnings = 0, {}, {}
 local function reset()
     clock, jobs, tweens, notices = 0, {}, {}, {}
+    simulate_gravity = false
+    loot_items, pickups, collected, visited_positions = {}, {}, {}, {}
+    ws.ChildAdded = signal()
     plr.Character = character(0); players = {plr}
     shared = {is_unloading = false}
-    trinket_bot = {path_running = true, connections = {}, path_points = {{position = Vector3.new(10, 0, 0)}}}
+    trinket_bot = {path_running = true, connections = {}, point_visualizations = {}, path_points = {{position = Vector3.new(10, 0, 0)}}}
     active_tween_data = {}
     Options = {CriticalDistance = {Value = 60}, ProximityCheck = {Value = 0}, TrinketBotSpeed = {Value = 100}}
     Toggles = {}
@@ -144,6 +194,9 @@ local function addPlayer(x, name)
     return player
 end
 -- @HELPERS@
+-- @BOT_CLEANUP@
+-- @COLLECTION@
+-- @GATE@
 -- @FINISH_EMERGENCY@
 -- @HOP_COMPLETION@
 TrinketBotServerhop = function(reason, skip, force, urgent)

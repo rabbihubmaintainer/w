@@ -13,6 +13,9 @@ source = (tests.parent / 'internalscript.lua').read_text()
 def section(start, end):
     offset = source.index(start)
     return source[offset:source.index(end, offset)]
+cleanup = section('            lifecycle:AddCleanup("trinket bot"', '            local function mark_trinket_collected(')
+gate = section('            local function Gate(', '            local function CheckForTrinkets()')
+collection = section('            local function CheckForTrinkets()', '            local function ScanTrinketsOnly()')
 helpers = section('            local function cancel_bot_movement()', '            local function getPing()')
 startup = section('            local function RunTrinketPath(test_mode)', '                library:Notify(test_mode and "Starting test path..."')
 startup += '\n startup_moves += 1\n return true\n end\n'
@@ -22,7 +25,7 @@ finish = section('            local function finish_emergency_hop()', '         
 hop_completion = 'local function complete_trinket_hop(immediate_logout)\n' + section('                if immediate_logout then\n                    finish_emergency_hop()', '            local function TrinketBotServerhop(')
 proximity = section('                proximity_connection = track_connection("proximity"', '                local trinkets_list = {}')
 runner = (tests / 'loot_bot_mocks.lua').read_text()
-runner = runner.replace('-- @HELPERS@', helpers).replace('-- @STARTUP@', startup).replace('-- @WRAPPER@', wrapper)
+runner = runner.replace('-- @GATE@', gate).replace('-- @COLLECTION@', collection).replace('-- @BOT_CLEANUP@', cleanup).replace('-- @HELPERS@', helpers).replace('-- @STARTUP@', startup).replace('-- @WRAPPER@', wrapper)
 runner = runner.replace('-- @EMERGENCY_LOGOUT@', exit_handler).replace('-- @FINISH_EMERGENCY@', finish).replace('-- @HOP_COMPLETION@', hop_completion)
 runner = runner.replace('-- @PROXIMITY@', 'local function install_proximity()\n local critical_serverhop_sent = false\n' + proximity + '\nend')
 runner += '\n' + (tests / 'loot_bot_cases.lua').read_text()

@@ -44,7 +44,9 @@ These checks execute the production proximity helpers, movement, startup checks,
 run guard, and proximity monitor with an offline clock and Roblox API doubles.
 They cover nearby players at startup, interrupted movement, continuous clearance,
 stop/unload/death/respawn, concurrent starts and hops, pickup guards, zero speed,
-and Stay in Server mode. The startup harness ends before game-specific setup;
+and Stay in Server mode. The collector checks also simulate gravity through real
+pickup loops and verify hover ownership, collision restoration, gate handoff,
+and unload cleanup. The startup harness ends before game-specific setup;
 these checks do not execute a full route in Roblox.
 
 Critical Distance takes priority at startup, during movement, and while paused.
@@ -62,6 +64,14 @@ pause, players must leave that radius plus 15 studs for two continuous seconds
 before movement resumes. Emergency gates still apply outside critical range;
 escape movement can bypass the pause so it does not deadlock beside a threat.
 
+Successful ordinary moves retain a position hold through pickup delays and idle
+time, without anchoring the character. The next move takes over that hold; gates,
+stop, emergency logout, death, respawn, root removal, and unload release it.
+Position and assembly velocity are stabilized while hovering and while movement
+is paused. Releasing the hold restores its saved collision and humanoid settings.
+
 Verify in-game by starting with another player beside you, letting them leave and
 return during movement, and using Stop Bot while paused. Repeat with Stay in Server
 enabled and with the configured critical/emergency settings.
+Also collect several trinkets above ground and check that the character does not
+drop between arrival and pickup, then verify a gate and manual stop release it.

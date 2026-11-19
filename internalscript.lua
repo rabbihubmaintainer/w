@@ -12371,6 +12371,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.stop_requested = true
                 trinket_bot.path_running = false
                 if active_tween_data.tween then active_tween_data.tween:Cancel() end
+                if active_tween_data.release then active_tween_data.release() end
                 for _, part in ipairs(trinket_bot.point_visualizations) do part:Destroy() end
             end)
 
@@ -12805,10 +12806,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local function cancel_bot_movement()
-                local tween, connection = active_tween_data.tween, active_tween_data.connection
-                active_tween_data.tween, active_tween_data.connection = nil, nil
+                local tween, connection, release = active_tween_data.tween, active_tween_data.connection, active_tween_data.release
+                active_tween_data.tween, active_tween_data.connection, active_tween_data.release = nil, nil, nil
                 if tween then tween:Cancel() end
-                if connection then connection:Disconnect() end
+                if release then release()
+                elseif connection then connection:Disconnect() end
             end
 
             local function run_bot_hop(callback, ...)
@@ -12947,22 +12949,57 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     humanoid:SetStateEnabled(5, false)
                     humanoid:ChangeState(3)
                 end
-                local connection = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
-                    if shared.is_unloading or plr.Character ~= character then return end
+                local connection, completed_connection, release
+                local hold_cframe, released = nil, false
+                local collision_states = {}
+                release = function()
+                    if released then return end
+                    released = true
+                    if connection then connection:Disconnect() end
+                    if completed_connection then completed_connection:Disconnect() end
+                    if active_tween_data.release == release then
+                        active_tween_data.tween, active_tween_data.connection, active_tween_data.release = nil, nil, nil
+                    end
+                    if not shared.is_unloading then
+                        if humanoid and humanoid.Parent then
+                            humanoid:SetStateEnabled(5, state_enabled)
+                            if state_enabled then humanoid:ChangeState(5) end
+                        end
+                        for part, can_collide in pairs(collision_states) do
+                            if part.Parent then part.CanCollide = can_collide end
+                        end
+                    end
+                end
+                -- Keep the same flight owner alive through arrival, pickup waits,
+                -- and idle time. Only a new move, gate, or cancellation releases it.
+                connection = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
+                    if shared.is_unloading or trinket_bot.stop_requested or plr.Character ~= character
+                        or not root.Parent or FindFirstChild(character, "HumanoidRootPart") ~= root
+                        or (humanoid and humanoid.Health <= 0) or trinket_bot.moderator_detected
+                        or (not allow_escape and not trinket_bot.path_running)
+                        or (not escape and emergency_gate_requested) then
+                        if active_tween_data.release == release then cancel_bot_movement() else release() end
+                        return
+                    end
+                    if hold_cframe then root.CFrame = hold_cframe end
+                    root.AssemblyLinearVelocity = Vector3.new()
+                    root.AssemblyAngularVelocity = Vector3.new()
                     for _, part in ipairs(character:GetDescendants()) do
                         if part:IsA("BasePart") then
                             part.Velocity = Vector3.new()
+                            if collision_states[part] == nil then collision_states[part] = part.CanCollide end
                             lifecycle:Remember(part, "CanCollide")
                             part.CanCollide = false
                         end
                     end
                 end))
+                active_tween_data.connection, active_tween_data.release = connection, release
                 local tween = lifecycle:CreateTween(ts, root,
                     TweenInfo.new(distance / speed, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
                     {CFrame = CFrame.new(targetPosition)})
                 active_tween_data.tween, active_tween_data.connection = tween, connection
                 local completed, reached = false, false
-                local completed_connection = utility:Connection(tween.Completed, function(state)
+                completed_connection = utility:Connection(tween.Completed, function(state)
                     completed = true
                     reached = state == Enum.PlaybackState.Completed
                 end)
@@ -12975,25 +13012,28 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         or (not escape and emergency_gate_requested) then break end
                     if not escape and nearby_loot_bot_player(get_bot_safety_radius(false), targetPosition) then
                         tween:Pause()
+                        hold_cframe = root.CFrame
                         if not wait_for_safe_loot_area(targetPosition, false) then break end
+                        hold_cframe = nil
                         tween:Play()
                     end
                     task.wait(0.1)
                 end
                 if not completed or not reached then tween:Cancel() end
                 completed_connection:Disconnect()
-                connection:Disconnect()
-                if active_tween_data.tween == tween then
-                    active_tween_data.tween, active_tween_data.connection = nil, nil
-                end
-                if humanoid and humanoid.Parent and not shared.is_unloading and not active_tween_data.tween then
-                    humanoid:SetStateEnabled(5, state_enabled)
-                    if state_enabled then humanoid:ChangeState(5) end
-                end
-                if reached and is_trinket_teleport and not shared.is_unloading then task.wait(0.25) end
-                return reached and not shared.is_unloading and not trinket_bot.stop_requested and plr.Character == character
-                    and root.Parent ~= nil and FindFirstChild(character, "HumanoidRootPart") == root
+                local arrived = reached and not released and not shared.is_unloading and not trinket_bot.stop_requested
+                    and plr.Character == character and root.Parent ~= nil and FindFirstChild(character, "HumanoidRootPart") == root
                     and (allow_escape or trinket_bot.path_running) and (escape or not emergency_gate_requested)
+                if arrived and not escape then
+                    hold_cframe = CFrame.new(targetPosition)
+                    if active_tween_data.release == release then active_tween_data.tween = nil end
+                else
+                    release()
+                end
+                if arrived and is_trinket_teleport and not shared.is_unloading then task.wait(0.25) end
+                return arrived and (escape or not released) and not shared.is_unloading and not trinket_bot.stop_requested
+                    and plr.Character == character and (allow_escape or trinket_bot.path_running)
+                    and (escape or not emergency_gate_requested)
             end
 
             local function getPing()
@@ -13099,14 +13139,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                if active_tween_data.tween then
-                    active_tween_data.tween:Cancel()
-                    active_tween_data.tween = nil
-                end
-                if active_tween_data.connection then
-                    active_tween_data.connection:Disconnect()
-                    active_tween_data.connection = nil
-                end
+                cancel_bot_movement()
 
                 if plr.Character then
                     local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
@@ -14049,14 +14082,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     trinket_bot.moderator_detected = true
                     trinket_bot.path_running = false
                     mem:RemoveItem("botstarted")
-                    if active_tween_data then
-                        if active_tween_data.tween then
-                            pcall(function() active_tween_data.tween:Cancel() end)
-                        end
-                        if active_tween_data.connection then
-                            pcall(function() active_tween_data.connection:Disconnect() end)
-                        end
-                    end
+                    cancel_bot_movement()
                     library:Notify("MODERATOR detected: "..moderator_player.Name.." - Returning to menu; bot stopped")
                     rps.Requests.ReturnToMenu:InvokeServer()
                     return
@@ -14310,11 +14336,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 trinket_bot.twenty_three_triggered = true
                 trinket_bot.path_running = false
 
-                if active_tween_data and active_tween_data.tween then
-                    pcall(function()
-                        active_tween_data.tween:Cancel()
-                    end)
-                end
+                cancel_bot_movement()
 
                 if mem and mem.RemoveItem then
                     pcall(function()
@@ -15561,14 +15583,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         emergency_gate_requested = nil
 
                        
-                        if active_tween_data.tween then
-                            active_tween_data.tween:Cancel()
-                            active_tween_data.tween = nil
-                        end
-                        if active_tween_data.connection then
-                            active_tween_data.connection:Disconnect()
-                            active_tween_data.connection = nil
-                        end
+                        cancel_bot_movement()
                      
                         if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
                             local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
@@ -16590,14 +16605,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
 
                             if not gate_success then
-                                if active_tween_data.tween then
-                                    active_tween_data.tween:Cancel()
-                                    active_tween_data.tween = nil
-                                end
-                                if active_tween_data.connection then
-                                    active_tween_data.connection:Disconnect()
-                                    active_tween_data.connection = nil
-                                end
+                                cancel_bot_movement()
 
                                 if plr.Character then
                                     local humanoid = FindFirstChildOfClass(plr.Character, "Humanoid")
@@ -19222,16 +19230,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             trinket_bot.gnav_connections = {}
                         end
 
-                        if active_tween_data then
-                            if active_tween_data.tween then
-                                pcall(function() active_tween_data.tween:Cancel() end)
-                                active_tween_data.tween = nil
-                            end
-                            if active_tween_data.connection then
-                                pcall(function() active_tween_data.connection:Disconnect() end)
-                                active_tween_data.connection = nil
-                            end
-                        end
+                        cancel_bot_movement()
 
                         restore_bot_state()
 

@@ -89,7 +89,9 @@ test('movement pauses for a new nearby player and resumes the same tween after c
     player.Character.HumanoidRootPart.Position = Vector3.new(300, 0, 0)
     step(15); assert(not tweens[1].playing)
     step(20)
-    assert(result == true and #tweens == 1 and plr.Character.Humanoid.enabled)
+    assert(result == true and #tweens == 1 and not plr.Character.Humanoid.enabled)
+    cancel_bot_movement()
+    assert(plr.Character.Humanoid.enabled)
 end)
 test('emergency interruption cancels movement and never reports a successful arrival', function()
     local result
@@ -266,5 +268,112 @@ test('disabled critical range, test mode, and Stay in Server retain their protec
         assert(not check_critical_player())
         assert(#exit_events == 0 and trinket_bot.path_running)
     end
+end)
+test('arrival keeps a stable hover throughout pickup delays and idle time', function()
+    simulate_gravity = true
+    local result
+    spawn(function() result = SmoothTeleport(Vector3.new(20, 25, 0), true) end)
+    step(20)
+    local root = plr.Character.HumanoidRootPart
+    assert(result == true and root.Position.Y == 25)
+    assert(active_tween_data.tween == nil and active_tween_data.connection.Connected)
+    assert(not plr.Character.Humanoid.enabled and not root.Anchored)
+    step(50)
+    assert(root.Position.Y == 25 and root.Position.X == 20)
+    assert(root.AssemblyLinearVelocity.Magnitude == 0 and root.AssemblyAngularVelocity.Magnitude == 0)
+end)
+test('the real trinket collector clicks successive items without losing height', function()
+    simulate_gravity = true
+    Toggles.PickupTrinkets = {Value = true}
+    addLoot(10, 25, 'first'); addLoot(20, 25, 'second')
+    spawn(CheckForTrinkets)
+    step(50)
+    assert(#pickups == 2)
+    for _, pickup in ipairs(pickups) do assert(pickup.y == 25 and pickup.x == pickup.target.X) end
+    assert(collected.first and collected.second)
+    assert(active_tween_data.connection.Connected and plr.Character.HumanoidRootPart.Position.Y == 25)
+    for _, connection in ipairs(ws.ChildAdded.connections) do assert(not connection.Connected) end
+end)
+test('a new move transfers hover ownership without leaving old position locks', function()
+    spawn(function() SmoothTeleport(Vector3.new(10, 20, 0)) end); step(5)
+    local previous = active_tween_data.connection
+    assert(previous.Connected)
+    simulate_gravity = true
+    spawn(function() SmoothTeleport(Vector3.new(30, 40, 0)) end); step(10)
+    assert(not previous.Connected and active_tween_data.connection.Connected)
+    local count = 0
+    for _, connection in ipairs(rs.RenderStepped.connections) do if connection.Connected then count += 1 end end
+    assert(count == 1 and plr.Character.HumanoidRootPart.Position.Y == 40)
+end)
+test('hover stays active while a nearby player delays the next move', function()
+    Toggles.StayInServer = {Value = true}
+    spawn(function() SmoothTeleport(Vector3.new(10, 20, 0)) end); step(5)
+    local root = plr.Character.HumanoidRootPart
+    addPlayer(11)
+    simulate_gravity = true
+    spawn(function() SmoothTeleport(Vector3.new(30, 40, 0)) end)
+    step(20)
+    assert(trinket_bot.safety_paused and root.Position.Y == 20 and #tweens == 1)
+end)
+test('a proximity pause during movement holds its current position against gravity', function()
+    Toggles.StayInServer = {Value = true}
+    spawn(function() SmoothTeleport(Vector3.new(300, 50, 0)) end)
+    step(1); addPlayer(1); step(1)
+    local root = plr.Character.HumanoidRootPart
+    local position = root.Position
+    simulate_gravity = true; step(15)
+    assert(tweens[1].pauses == 1 and root.Position.Y == position.Y and root.Position.X == position.X)
+end)
+test('stop, death, respawn, and root removal release an already completed hover', function()
+    for _, action in ipairs({'stop', 'death', 'respawn', 'root'}) do
+        reset()
+        spawn(function() SmoothTeleport(Vector3.new(10, 20, 0)) end); step(5)
+        local previous, humanoid = active_tween_data.connection, plr.Character.Humanoid
+        if action == 'stop' then trinket_bot.stop_requested = true
+        elseif action == 'death' then humanoid.Health = 0
+        elseif action == 'respawn' then plr.Character = character(0)
+        else plr.Character.HumanoidRootPart = nil end
+        step(1)
+        assert(not previous.Connected and active_tween_data.release == nil and active_tween_data.connection == nil)
+        assert(humanoid.enabled)
+        if action == 'respawn' then assert(plr.Character.Humanoid.enabled) end
+    end
+end)
+test('release restores original collision and humanoid settings and stops pinning position', function()
+    local root, humanoid = plr.Character.HumanoidRootPart, plr.Character.Humanoid
+    local limb = node('Limb', 'Part'); limb.CanCollide = false
+    function plr.Character:GetDescendants() return {root, limb} end
+    spawn(function() SmoothTeleport(Vector3.new(10, 20, 0)) end); step(5)
+    assert(not root.CanCollide and not limb.CanCollide and not humanoid.enabled)
+    cancel_bot_movement(); cancel_bot_movement()
+    assert(root.CanCollide and not limb.CanCollide and humanoid.enabled)
+    root.Position = Vector3.new(50, 70, 0); step(2)
+    assert(root.Position.X == 50 and root.Position.Y == 70)
+end)
+test('critical logout releases an arrival hover before dispatching the menu request', function()
+    spawn(function() SmoothTeleport(Vector3.new(10, 20, 0), true) end); step(5)
+    local previous = active_tween_data.connection
+    assert(previous.Connected)
+    assert(emergency_logout('Player in critical range'))
+    assert(not previous.Connected and active_tween_data.release == nil)
+    assert(exit_events[1].kind == 'menu' and exit_events[1].time == clock)
+end)
+test('the production unload cleanup releases a completed hover', function()
+    spawn(function() SmoothTeleport(Vector3.new(10, 20, 0)) end); step(5)
+    local previous = active_tween_data.connection
+    shared.is_unloading = true
+    bot_cleanup()
+    assert(not previous.Connected and active_tween_data.release == nil and active_tween_data.connection == nil)
+end)
+test('a gate attempt releases hover before handing control to the gate routine', function()
+    spawn(function() SmoothTeleport(Vector3.new(10, 20, 0)) end); step(5)
+    local previous = active_tween_data.connection
+    assert(previous.Connected)
+    -- No Gate tool is present: even a failed attempt must relinquish its old lock.
+    assert(Gate('Test destination') == false)
+    assert(not previous.Connected and active_tween_data.release == nil)
+    local root = plr.Character.HumanoidRootPart
+    root.Position = Vector3.new(100, 80, 0); step(2)
+    assert(root.Position.X == 100 and root.Position.Y == 80)
 end)
 print(tostring(passed) .. ' loot bot safety checks passed')
