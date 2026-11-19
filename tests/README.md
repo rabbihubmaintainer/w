@@ -33,3 +33,27 @@ depends on the game, executor APIs, and remote Library/SaveManager/ThemeManager 
 Cleanup failures are now reported as `[rabbihub] unload ...` or `[rabbihub] restore ...`
 instead of being silently discarded. Capture the first such error and its context
 if an in-game problem remains.
+
+## Loot bot proximity checks
+
+```sh
+python3 tests/run_loot_bot_tests.py --luau /path/to/luau
+```
+
+These checks execute the production proximity helpers, movement, startup checks,
+run guard, and proximity monitor with an offline clock and Roblox API doubles.
+They cover nearby players at startup, interrupted movement, continuous clearance,
+stop/unload/death/respawn, concurrent starts and hops, pickup guards, zero speed,
+and Stay in Server mode. The startup harness ends before game-specific setup;
+these checks do not execute a full route in Roblox.
+
+The bot waits before starting if a living player is within the largest of 60 studs,
+Critical Distance, or Proximity Check. Normal movement and pickups use the largest
+of 60 studs or Critical Distance. After a pause, players must leave that radius
+plus 15 studs for two continuous seconds before movement resumes. Existing
+critical-distance hops and emergency gates still apply during a running route;
+escape movement can bypass the pause so it does not deadlock beside a threat.
+
+Verify in-game by starting with another player beside you, letting them leave and
+return during movement, and using Stop Bot while paused. Repeat with Stay in Server
+enabled and with the configured critical/emergency settings.

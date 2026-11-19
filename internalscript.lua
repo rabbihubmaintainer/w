@@ -12368,6 +12368,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local pending_pickup_ids = trinket_bot.pending_pickup_ids
             local active_tween_data = {tween = nil, connection = nil}
             lifecycle:AddCleanup("trinket bot", function()
+                trinket_bot.stop_requested = true
                 trinket_bot.path_running = false
                 if active_tween_data.tween then active_tween_data.tween:Cancel() end
                 for _, part in ipairs(trinket_bot.point_visualizations) do part:Destroy() end
@@ -12400,6 +12401,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             local proximity_warnings = {}
             local mana_initialized = false
             local emergency_gate_requested = nil
+            local emergency_gate_in_progress = false
             local current_gate_section = 0
             local player_encounters = {}
             local emergency_resume_mode = false
@@ -12802,133 +12804,182 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return Vector3.new(0, -rayDistance, 0)
             end
 
-            local function SmoothTeleport(target, is_trinket_teleport)
-                is_trinket_teleport = is_trinket_teleport or false
+            local function cancel_bot_movement()
+                local tween, connection = active_tween_data.tween, active_tween_data.connection
+                active_tween_data.tween, active_tween_data.connection = nil, nil
+                if tween then tween:Cancel() end
+                if connection then connection:Disconnect() end
+            end
 
-                if not plr.Character or not FindFirstChild(plr.Character, "HumanoidRootPart") then
-                    return
+            local function run_bot_hop(callback, ...)
+                local owner = coroutine.running()
+                if trinket_bot.hop_owner then
+                    if trinket_bot.hop_owner ~= owner then return false end
+                    return callback(...)
                 end
-
-                if shared.is_unloading then
-                    return
+                trinket_bot.hop_owner = owner
+                trinket_bot.path_running = false
+                cancel_bot_movement()
+                local results = table.pack(pcall(callback, ...))
+                trinket_bot.hop_owner = nil
+                if not results[1] then
+                    if not shared.is_unloading then
+                        warn("[rabbihub] loot bot hop stopped: " .. tostring(results[2]))
+                        library:Notify("Loot bot stopped: serverhop failed. Check the console for details.")
+                    end
+                    return false
                 end
+                return table.unpack(results, 2, results.n)
+            end
 
-                local root = plr.Character.HumanoidRootPart
-                local targetPosition
+            local function get_bot_safety_radius(include_proximity)
+                local critical = tonumber(Options.CriticalDistance and Options.CriticalDistance.Value) or 60
+                local proximity = include_proximity and tonumber(Options.ProximityCheck and Options.ProximityCheck.Value) or 0
+                return math.max(60, critical, proximity or 0)
+            end
 
-                if typeof(target) == "CFrame" then
-                    targetPosition = target.Position
-                elseif typeof(target) == "Vector3" then
-                    targetPosition = target
-                elseif typeof(target) == "Instance" and target:IsA("BasePart") then
-                    targetPosition = target.Position
-                else
-
-                    return
-                end
-
-                local current_position = root.Position
-                local distance = (targetPosition - current_position).Magnitude
-                if distance > 1500 then
-                    library:Notify(string.format("!! Attempted teleport of %.0f studs! Stopping path... (if this is a bug DM work at a pizza place bot)", distance))
-                    trinket_bot.path_running = false
-                    return
-                end
-
+            local function nearby_loot_bot_player(radius, destination)
                 local character = plr.Character
-                if character then
-                    local humanoid = FindFirstChildOfClass(character, "Humanoid")
-                    if humanoid then
-                        lifecycle:RememberHumanoidState(humanoid, 5)
-                        humanoid:SetStateEnabled(5, false)
-                        humanoid:ChangeState(3)
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                if not root then return nil end
+                local nearest, nearest_distance = nil, math.huge
+                for _, other in ipairs(plrs:GetPlayers()) do
+                    local other_character = other ~= plr and other.Character
+                    local other_root = other_character and FindFirstChild(other_character, "HumanoidRootPart")
+                    local humanoid = other_character and FindFirstChildOfClass(other_character, "Humanoid")
+                    if other_root and (not humanoid or humanoid.Health > 0) then
+                        local distance = (other_root.Position - root.Position).Magnitude
+                        if destination then distance = math.min(distance, (other_root.Position - destination).Magnitude) end
+                        if distance <= radius and distance < nearest_distance then
+                            nearest, nearest_distance = other, distance
+                        end
                     end
                 end
+                return nearest, nearest_distance
+            end
 
-                local connection
-                connection = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
-                    if shared.is_unloading then
-                        if connection then
-                            connection:Disconnect()
-                            connection = nil
-                            active_tween_data.connection = nil
+            local function loot_bot_can_collect(destination)
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                return root ~= nil and root.Parent ~= nil and (not humanoid or humanoid.Health > 0)
+                    and not shared.is_unloading and not trinket_bot.stop_requested and not trinket_bot.hop_owner
+                    and trinket_bot.path_running
+                    and not trinket_bot.safety_paused and not trinket_bot.moderator_detected
+                    and not emergency_gate_requested and not emergency_gate_in_progress
+                    and not nearby_loot_bot_player(get_bot_safety_radius(false), destination)
+            end
+
+            local function wait_for_safe_loot_area(destination, include_proximity)
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                local clear_since, paused = nil, false
+                while not shared.is_unloading and not trinket_bot.stop_requested and trinket_bot.path_running
+                    and not trinket_bot.moderator_detected and not emergency_gate_requested do
+                    local humanoid = character and FindFirstChildOfClass(character, "Humanoid")
+                    if plr.Character ~= character or not root or not root.Parent or (humanoid and humanoid.Health <= 0) then break end
+                    local radius = get_bot_safety_radius(include_proximity) + (paused and 15 or 0)
+                    local player = nearby_loot_bot_player(radius, destination)
+                    if player then
+                        clear_since = nil
+                        if not paused then
+                            paused = true
+                            trinket_bot.safety_paused = true
+                            library:Notify(string.format("Loot bot paused: %s is too close. Waiting for a clear area...", player.Name), 3)
                         end
-                        return
+                    elseif not paused or (clear_since and os.clock() - clear_since >= 2) then
+                        trinket_bot.safety_paused = false
+                        if paused then library:Notify("Area clear - resuming loot bot", 2) end
+                        return true
+                    else
+                        clear_since = clear_since or os.clock()
                     end
+                    task.wait(0.1)
+                end
+                trinket_bot.safety_paused = false
+                return false
+            end
 
-                    if plr.Character then
-                        for _, v in pairs(plr.Character:GetDescendants()) do
-                            if v:IsA("BasePart") then
-                                v.Velocity = Vector3.new()
-                                lifecycle:Remember(v, "CanCollide")
-                                v.CanCollide = false
-                            end
+            local function SmoothTeleport(target, is_trinket_teleport, allow_escape)
+                local character = plr.Character
+                local root = character and FindFirstChild(character, "HumanoidRootPart")
+                if not root or shared.is_unloading or trinket_bot.stop_requested then return false end
+                local targetPosition
+                if typeof(target) == "CFrame" then targetPosition = target.Position
+                elseif typeof(target) == "Vector3" then targetPosition = target
+                elseif typeof(target) == "Instance" and target:IsA("BasePart") then targetPosition = target.Position
+                else return false end
+
+                local escape = allow_escape or emergency_gate_in_progress
+                if not escape and not wait_for_safe_loot_area(targetPosition, false) then return false end
+                if shared.is_unloading or plr.Character ~= character or (not escape and not trinket_bot.path_running) then return false end
+                local distance = (targetPosition - root.Position).Magnitude
+                if distance > 1500 then
+                    library:Notify(string.format("Attempted movement of %.0f studs - stopping path", distance))
+                    trinket_bot.path_running = false
+                    return false
+                end
+                local speed = tonumber(Options.TrinketBotSpeed and Options.TrinketBotSpeed.Value) or 100
+                if speed <= 0 then
+                    trinket_bot.path_running = false
+                    library:Notify("Loot bot stopped: movement speed must be above zero")
+                    return false
+                end
+                cancel_bot_movement()
+                local humanoid = FindFirstChildOfClass(character, "Humanoid")
+                local state_enabled = humanoid and humanoid:GetStateEnabled(5)
+                if humanoid then
+                    lifecycle:RememberHumanoidState(humanoid, 5)
+                    humanoid:SetStateEnabled(5, false)
+                    humanoid:ChangeState(3)
+                end
+                local connection = utility:Connection(rs.RenderStepped, LPH_NO_VIRTUALIZE(function()
+                    if shared.is_unloading or plr.Character ~= character then return end
+                    for _, part in ipairs(character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.Velocity = Vector3.new()
+                            lifecycle:Remember(part, "CanCollide")
+                            part.CanCollide = false
                         end
                     end
                 end))
-
-                local distance = (root.Position - targetPosition).Magnitude
-                local speed = Options.TrinketBotSpeed and Options.TrinketBotSpeed.Value or 100
-                local time = distance / speed
-
-                local tweenInfo = TweenInfo.new(time, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut)
-                local tween = lifecycle:CreateTween(ts, root, tweenInfo, {CFrame = CFrame.new(targetPosition)})
-
-                active_tween_data.tween = tween
-                active_tween_data.connection = connection
-
-                tween:Play()
-
-                local completed = false
-                local unload_connection
-                unload_connection = utility:Connection(tween.Completed, function()
+                local tween = lifecycle:CreateTween(ts, root,
+                    TweenInfo.new(distance / speed, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
+                    {CFrame = CFrame.new(targetPosition)})
+                active_tween_data.tween, active_tween_data.connection = tween, connection
+                local completed, reached = false, false
+                local completed_connection = utility:Connection(tween.Completed, function(state)
                     completed = true
-                    if unload_connection then
-                        unload_connection:Disconnect()
-                    end
+                    reached = state == Enum.PlaybackState.Completed
                 end)
-
-                while not completed and not shared.is_unloading and trinket_bot.path_running and not emergency_gate_requested and not trinket_bot.moderator_detected do
-                    task.wait()
-                end
-
-                if shared.is_unloading or not trinket_bot.path_running or trinket_bot.moderator_detected then
-                    tween:Cancel()
-                end
-
-                if not shared.is_unloading and is_trinket_teleport then
-                    task.wait(0.25)
-                end
-
-                if character then
-                    local humanoid = FindFirstChildOfClass(character, "Humanoid")
-                    if humanoid then
-                        lifecycle:RememberHumanoidState(humanoid, 5)
-                        humanoid:SetStateEnabled(5, true)
-                        humanoid:ChangeState(5)
+                tween:Play()
+                while not completed do
+                    if shared.is_unloading or trinket_bot.stop_requested or plr.Character ~= character or trinket_bot.moderator_detected
+                        or not root.Parent or FindFirstChild(character, "HumanoidRootPart") ~= root
+                        or (humanoid and humanoid.Health <= 0)
+                        or (not allow_escape and not trinket_bot.path_running)
+                        or (not escape and emergency_gate_requested) then break end
+                    if not escape and nearby_loot_bot_player(get_bot_safety_radius(false), targetPosition) then
+                        tween:Pause()
+                        if not wait_for_safe_loot_area(targetPosition, false) then break end
+                        tween:Play()
                     end
-
-                    if shared.is_unloading then
-                        for _, part in ipairs(character:GetDescendants()) do
-                            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                                if part.Name == "Head" or part.Name == "Torso" then
-                                    lifecycle:Remember(part, "CanCollide")
-                                    part.CanCollide = true
-                                else
-                                    lifecycle:Remember(part, "CanCollide")
-                                    part.CanCollide = false
-                                end
-                            end
-                        end
-                    end
+                    task.wait(0.1)
                 end
-
-                if connection then
-                    connection:Disconnect()
+                if not completed or not reached then tween:Cancel() end
+                completed_connection:Disconnect()
+                connection:Disconnect()
+                if active_tween_data.tween == tween then
+                    active_tween_data.tween, active_tween_data.connection = nil, nil
                 end
-
-                active_tween_data.tween = nil
-                active_tween_data.connection = nil
+                if humanoid and humanoid.Parent and not shared.is_unloading and not active_tween_data.tween then
+                    humanoid:SetStateEnabled(5, state_enabled)
+                    if state_enabled then humanoid:ChangeState(5) end
+                end
+                if reached and is_trinket_teleport and not shared.is_unloading then task.wait(0.25) end
+                return reached and not shared.is_unloading and not trinket_bot.stop_requested and plr.Character == character
+                    and root.Parent ~= nil and FindFirstChild(character, "HumanoidRootPart") == root
+                    and (allow_escape or trinket_bot.path_running) and (escape or not emergency_gate_requested)
             end
 
             local function getPing()
@@ -13283,7 +13334,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
             local function CheckForTrinkets()
                 local root = plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart")
-                if not root then return end
+                if not root or not loot_bot_can_collect() then return end
 
                 local trinkets = {}
                 local ignore_ice = not (Toggles.PickupIceEssence and Toggles.PickupIceEssence.Value)
@@ -13375,16 +13426,17 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         local trinket_position = trinketData.object.Position
                         local trinket_id = FindFirstChild(trinketData.object, "ID")
 
-                        SmoothTeleport(trinket_position, true)
+                        if not SmoothTeleport(trinket_position, true) then break end
+                        task.wait(0.18)
+                        if not loot_bot_can_collect(trinket_position) then break end
                         table.insert(visited_positions, trinket_position)
                         if #visited_positions > 1000 then
                             table.remove(visited_positions, 1)
                         end
                         currentPos = trinket_position
-                        task.wait(0.18)
 
                         local click_detector = FindFirstChild(trinketData.object, "ClickDetector", true)
-                        if click_detector then
+                        if trinketData.object.Parent and click_detector and loot_bot_can_collect(trinket_position) then
                             if trinket_id and trinket_id:IsA("StringValue") then
                                 queue_pending_pickup(trinket_id.Value)
                             end
@@ -13503,8 +13555,9 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
             end
 
             local teleport_debounce = false
-            local function TrinketBotServerhop(reason, skip_test_mode_check, force_moderator_hop)
+            local function DoTrinketBotServerhop(reason, skip_test_mode_check, force_moderator_hop)
                 trinket_bot.path_running = false
+                cancel_bot_movement()
                 if not force_moderator_hop and not skip_test_mode_check and trinket_bot.test_mode then
                     library:Notify(string.format("Serverhop blocked (test mode): %s", reason or "Unknown"))
                     return
@@ -13807,13 +13860,19 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
             end
 
-            local function SafeServerhop(reason, skip_test_mode_check, skip_gate_escape)
+            local function TrinketBotServerhop(...)
+                return run_bot_hop(DoTrinketBotServerhop, ...)
+            end
+
+            local function DoSafeServerhop(reason, skip_test_mode_check, skip_gate_escape)
                 trinket_bot.path_running = false
+                cancel_bot_movement()
                 if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
                     local pos = plr.Character.HumanoidRootPart.Position
                     mem:SetItem("lastPlayerPosition", string.format("%s,%s,%s", pos.X, pos.Y, pos.Z))
                 end
 
+                if shared.is_unloading or trinket_bot.stop_requested then return end
                 if not plr.Character or not cs:HasTag(plr.Character, "Danger") then
                     library:Notify("Not in danger - returning to menu")
                     trinket_bot.path_running = false
@@ -13873,7 +13932,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             if not point.is_gate_point then
                                 local dist_from_last = (point.position - last_pos).Magnitude
                                 if dist_from_last <= 300 then
-                                    SmoothTeleport(point.position)
+                                    SmoothTeleport(point.position, false, true)
                                     last_pos = point.position
                                     points_traversed = points_traversed + 1
                                     task.wait(0.2)
@@ -13900,7 +13959,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     local current_pos = plr.Character.HumanoidRootPart.Position
                     local escape_offset = Vector3.new(math.random(-300, 300), 0, math.random(-300, 300))
                     library:Notify("Escape: Moving to random nearby position")
-                    SmoothTeleport(current_pos + escape_offset)
+                    SmoothTeleport(current_pos + escape_offset, false, true)
                     task.wait(0.5)
                 end
 
@@ -13915,10 +13974,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         end
                     end)
 
-                    while not danger_cleared do
+                    while not danger_cleared and not shared.is_unloading and not trinket_bot.stop_requested do
                         task.wait(0.1)
                     end
                     if danger_conn then danger_conn:Disconnect() end
+                    if shared.is_unloading or trinket_bot.stop_requested then return end
                     library:Notify("Danger cleared!")
                 end
 
@@ -13927,6 +13987,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     rps.Requests.ReturnToMenu:InvokeServer()
                 end)
                 TrinketBotServerhop(reason .. (escaped and " (escaped)" or " (escape failed)"), skip_test_mode_check)
+            end
+
+            local function SafeServerhop(...)
+                return run_bot_hop(DoSafeServerhop, ...)
             end
 
             local function handle_moderator_detection(moderator_player)
@@ -14322,7 +14386,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 return true
             end
 
-            local function ExecutePath(test_mode)
+            local function RunTrinketPath(test_mode)
                 if not cheat_client or not cheat_client.config then
                     return
                 end
@@ -14437,28 +14501,15 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                     end
                 end
 
-                local stay_in_server_manual = Toggles.StayInServer and Toggles.StayInServer.Value or false
-                if not stay_in_server_manual then
-                    local proximity_check_distance = Options.ProximityCheck and Options.ProximityCheck.Value or 0
-                    if proximity_check_distance > 0 then
-                        local bot_pos = root.Position
-                        for _, other_player in next, plrs:GetPlayers() do
-                            if other_player ~= plr and other_player.Character and FindFirstChild(other_player.Character, "HumanoidRootPart") then
-                                local distance = (other_player.Character.HumanoidRootPart.Position - bot_pos).Magnitude
-                                if distance <= proximity_check_distance then
-                                    trinket_bot.path_running = false
-                                    library:Notify(string.format("Player %s is within %d studs! Cannot start path.", other_player.Name, math.floor(proximity_check_distance)))
-                                    if not test_mode and mem:HasItem("botstarted") and mem:GetItem("botstarted") == "true" then
-                                        TrinketBotServerhop(string.format("Player %s within %d studs at spawn! Cannot start path - Serverhopping", other_player.Name, math.floor(proximity_check_distance)))
-                                    end
-                                    return
-                                end
-                            end
-                        end
-                    end
+                emergency_gate_requested = nil
+                emergency_gate_in_progress = false
+                if not wait_for_safe_loot_area(nil, true) then
+                    trinket_bot.path_running = false
+                    return
                 end
 
                 library:Notify(test_mode and "Starting test path..." or "Starting path...")
+                trinket_bot.restore_needed = true
 
                 visited_positions = {}
                 collected_trinket_ids = {}
@@ -14696,7 +14747,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 proximity_warnings = {}
-                local emergency_gate_in_progress = false
+                emergency_gate_in_progress = false
                 local critical_serverhop_sent = false
 
                 local emergency_serverhop_connection
@@ -14909,24 +14960,21 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 end
 
                 proximity_connection = track_connection("proximity", utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function()
+                    if shared.is_unloading or not trinket_bot.path_running or critical_serverhop_sent then return end
                     if plr.Character and FindFirstChild(plr.Character, "HumanoidRootPart") then
                         local bot_pos = plr.Character.HumanoidRootPart.Position
                         local critical_distance = Options.CriticalDistance and Options.CriticalDistance.Value or 60
                         local stay_in_server = Toggles.StayInServer and Toggles.StayInServer.Value or false
 
                         if critical_distance > 0 and not critical_serverhop_sent and not stay_in_server then
-                            for _, other_player in next, plrs:GetPlayers() do
-                                if other_player ~= plr and other_player.Character and FindFirstChild(other_player.Character, "HumanoidRootPart") then
-                                    local distance = (other_player.Character.HumanoidRootPart.Position - bot_pos).Magnitude
-
-                                    if distance <= critical_distance then
-                                        critical_serverhop_sent = true
-                                        library:Notify(string.format("!! CRITICAL DANGER: Player %s within %.0f studs - immediate serverhop !!", other_player.Name, distance))
-                                        trinket_bot.path_running = false
-                                        SafeServerhop(string.format("Player %s within %.0f studs so am serverhopping instantly!!! (dangerously close)", other_player.Name, distance))
-                                        return
-                                    end
-                                end
+                            local other_player, distance = nearby_loot_bot_player(critical_distance)
+                            if other_player then
+                                critical_serverhop_sent = true
+                                trinket_bot.path_running = false
+                                cancel_bot_movement()
+                                library:Notify(string.format("Critical distance: %s within %.0f studs - serverhopping", other_player.Name, distance))
+                                SafeServerhop(string.format("Player %s within %.0f studs", other_player.Name, distance))
+                                return
                             end
 
                             if ws.Live then
@@ -14937,6 +14985,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             local distance = (shrieker_root.Position - bot_pos).Magnitude
                                             if distance <= critical_distance then
                                                 critical_serverhop_sent = true
+                                                cancel_bot_movement()
                                                 library:Notify(string.format("!! CRITICAL DANGER: Shrieker within %.0f studs - immediate serverhop !!", distance))
                                                 trinket_bot.path_running = false
                                                 SafeServerhop(string.format("Shrieker within %.0f studs - serverhopping instantly!!! (necromancer attack)", distance))
@@ -15012,6 +15061,11 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                     for _, other_player in next, plrs:GetPlayers() do
                         if other_player ~= plr and other_player.Character and FindFirstChild(other_player.Character, "HumanoidRootPart") then
+                            local humanoid = FindFirstChildOfClass(other_player.Character, "Humanoid")
+                            if humanoid and humanoid.Health <= 0 then
+                                proximity_warnings[other_player.UserId] = nil
+                                continue
+                            end
                             local distance = (other_player.Character.HumanoidRootPart.Position - bot_pos).Magnitude
                             local state = proximity_warnings[other_player.UserId]
 
@@ -15108,7 +15162,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 auto_trinket_connection = track_connection("auto_trinket", utility:Connection(rs.Heartbeat, LPH_NO_VIRTUALIZE(function()
                     if not plr.Character or shared.is_unloading or not trinket_bot.path_running then return end
 
-                    if cheat_client.currently_dropping then return end
+                    if cheat_client.currently_dropping or not loot_bot_can_collect() then return end
 
                     if Toggles.ReequipGateInLoop and Toggles.ReequipGateInLoop.Value and not temporary_equip_active then
                         local gate_in_backpack = FindFirstChild(plr.Backpack, "Gate")
@@ -15169,7 +15223,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 dist = click_detector.MaxActivationDistance
                             end
 
-                            if click_detector and distance > 0 and distance < dist then
+                            if click_detector and distance > 0 and distance < dist and loot_bot_can_collect(object.Position) then
                                 local trinket_id = FindFirstChild(object, "ID")
                                 if trinket_id and trinket_id:IsA("StringValue") then
                                     queue_pending_pickup(trinket_id.Value)
@@ -15258,7 +15312,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end
                         end
 
-                        trinket_bot.path_running = true
+                        -- Preserve a stop or emergency issued while this branch yielded.
                         if grounded then
                             SmoothTeleport(CFrame.new(target_pos))
                             task.wait(1.5)
@@ -15827,7 +15881,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                                                 local saved_emergency_gate = emergency_gate_requested
                                                 emergency_gate_requested = nil
-                                                trinket_bot.path_running = true
+                                                -- Preserve a stop or emergency issued while this branch yielded.
 
                                                 if grounded then
                                                     SmoothTeleport(CFrame.new(target_pos))
@@ -15956,7 +16010,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                                                     local saved_emergency_gate = emergency_gate_requested
                                                     emergency_gate_requested = nil
-                                                    trinket_bot.path_running = true
+                                                    -- Preserve a stop or emergency issued while this branch yielded.
 
                                                     if grounded then
                                                         SmoothTeleport(CFrame.new(target_pos))
@@ -16225,12 +16279,8 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             if not has_nearby_wait_point then
                                                 library:Notify(string.format("Detouring for %s (%.0f studs)", trinket_name or "trinket", distance_to_trinket))
 
-                                            if trinket_id_obj and trinket_id_obj:IsA("StringValue") then
-                                                mark_trinket_collected(trinket_id_obj.Value)
-                                            end
-
                                             local return_pos = current_pos
-                                            SmoothTeleport(trinket_pos, true)
+                                            if not SmoothTeleport(trinket_pos, true) then break end
                                             table.insert(visited_positions, trinket_pos)
                                             if #visited_positions > 1000 then
                                                 table.remove(visited_positions, 1)
@@ -16238,11 +16288,14 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                             task.wait(0.18)
 
                                             local click_detector = FindFirstChild(object, "ClickDetector", true)
-                                            if click_detector then
+                                            if object.Parent and click_detector and loot_bot_can_collect(trinket_pos) then
                                                 if trinket_id_obj and trinket_id_obj:IsA("StringValue") then
                                                     queue_pending_pickup(trinket_id_obj.Value)
                                                 end
                                                 fireclickdetector(click_detector)
+                                                if trinket_id_obj and trinket_id_obj:IsA("StringValue") then
+                                                    mark_trinket_collected(trinket_id_obj.Value)
+                                                end
                                                 task.wait(0.18)
                                             end
 
@@ -16456,7 +16509,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
 
                                                     local saved_emergency_gate = emergency_gate_requested
                                                     emergency_gate_requested = nil
-                                                    trinket_bot.path_running = true
+                                                    -- Preserve a stop or emergency issued while this branch yielded.
 
                                                     if grounded then
                                                         SmoothTeleport(CFrame.new(target_pos))
@@ -16912,7 +16965,10 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                                 end
                             else
                                 library:Notify(string.format("Moving to point %d/%d", i, #trinket_bot.path_points))
-                                SmoothTeleport(target_point.position)
+                                if not SmoothTeleport(target_point.position) then
+                                    if emergency_gate_requested then continue end
+                                    break
+                                end
                             end
                         end
                     end
@@ -17438,7 +17494,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                         library:Notify("Restarting path...")
                         task.wait(1)
                         trinket_bot.path_running = false
-                        ExecutePath(false)
+                        RunTrinketPath(false)
                     else
                         library:Notify("Path completed! Serverhopping...")
                         task.wait(0.5)
@@ -17556,6 +17612,34 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                             end)
                         end)
                     end
+                end
+            end
+
+            local function ExecutePath(test_mode)
+                if shared.is_unloading then return end
+                if trinket_bot.path_executing or trinket_bot.hop_owner then
+                    library:Notify("Loot bot is already running or stopping")
+                    return
+                end
+                trinket_bot.path_executing = true
+                trinket_bot.stop_requested = false
+                trinket_bot.restore_needed = false
+                local ok, err = xpcall(function() RunTrinketPath(test_mode) end, debug.traceback)
+                trinket_bot.path_running = false
+                trinket_bot.safety_paused = false
+                emergency_gate_in_progress = false
+                if not trinket_bot.hop_owner then cancel_bot_movement() end
+                for _, collection in ipairs({trinket_bot.connections or {}, trinket_bot.illu_connections or {}, trinket_bot.gnav_connections or {}}) do
+                    for key, connection in pairs(collection) do
+                        if connection then pcall(function() connection:Disconnect() end) end
+                        collection[key] = nil
+                    end
+                end
+                if trinket_bot.restore_needed and not shared.is_unloading and not trinket_bot.hop_owner then restore_bot_state() end
+                trinket_bot.path_executing = false
+                if not ok and not shared.is_unloading then
+                    warn("[rabbihub] loot bot stopped: " .. tostring(err))
+                    library:Notify("Loot bot stopped safely after an error. Check the console for details.")
                 end
             end
 
@@ -17911,7 +17995,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Max = 1000,
                 Rounding = 0,
                 Compact = true,
-                Tooltip = "If a player is within X studs, wait 5s then serverhop (0 = disabled)"
+                Tooltip = "Extra startup clearance and emergency gate range. Looting always pauses within at least 60 studs; resumes after 2 clear seconds (0 = no extra range)."
             })
 
             group_trinket_bot:AddSlider("CriticalDistance", {
@@ -17921,7 +18005,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Max = 1000,
                 Rounding = 0,
                 Compact = true,
-                Tooltip = "Bot will instantly serverhop if a player is within this range (bypasses all other checks, 0 = disabled)"
+                Tooltip = "While running, instantly serverhop when a player enters this range (0 = no critical hop). Startup waits for a clear area; the minimum 60-stud loot safety pause still applies."
             })
 
             group_trinket_bot:AddSlider("MinPlayerCount", {
@@ -18994,6 +19078,7 @@ if game.PlaceId == 3541987450 or game.PlaceId == 5208655184 or game.PlaceId == 1
                 Text = "Stop Bot",
                 Tooltip = "Stop the currently running bot",
                 Func = function()
+                    trinket_bot.stop_requested = true
                     if trinket_bot.path_running then
                         trinket_bot.path_running = false
                         mem:RemoveItem("botstarted")
